@@ -1,0 +1,324 @@
+# Problem 2: Predicting Bike Sharing Demand
+
+## Data Exploration
+
+### Data Summary
+
+```{R}
+bike <- read.csv("bike.csv", header = T)
+str(bike)
+summary(bike)
+```
+
+The dataset contains `r nrow(bike)` observations
+
+### Variable types
+
+-   `datetime`: continuous\
+-   `season`: nominal categorical\
+-   `holiday`: nominal categorical\
+-   `workingday`: nominal categorical\
+-   `weather`: ordinal discrete\
+-   `temp`: continuous\
+-   `atemp`: continuous\
+-   `humidity`: continuous\
+-   `windspeed`: continuous\
+-   `casual`: continuous\
+-   `registered`: continuous\
+-   `count`: continuous
+
+### Missing Values:
+
+```{R}
+i <- 1
+while(i <= ncol(bike)){
+  bike[which(is.na(bike[i])),]
+  i <- i + 1
+}
+```
+
+There are no missing values
+
+### Histogram
+
+```{R}
+hist(bike$count, breaks = 250)
+```
+
+The histogram follows a Zipfian distribution. The largest frequency is that of 0 and the histogram has a strong positive skew.
+
+## Feature Engineering
+
+### Remove Columns
+
+```{R}
+bike$registered <- NULL
+bike$casual <- NULL
+```
+
+### Normalize Count
+
+```{R}
+bike.root <- bike
+bike.root$count <- bike.root$count^0.5 # calculate square root of count
+hist(bike.root$count, breaks = 32)
+```
+
+### Extract Date
+
+```{R}
+library(lubridate)
+timeDates <- as.POSIXlt(bike.root$datetime)     # get datetime objects as POSIXlt objects
+bike.date <- bike.root
+bike.date$dayofmonth <- unclass(timeDates)$mday # unclass the POSIXlt object into its columns
+bike.date$year <- unclass(timeDates)$year
+bike.date$dayofweek <- unclass(timeDates)$wday
+bike.date$month <- unclass(timeDates)$mon
+bike.date$hour <- unclass(timeDates)$hour
+```
+
+### Convert Time to Circular
+
+#### Convert Values
+
+```{R}
+bike.date.trig <- bike.date
+bike.date.trig$xmonth <- cos(2 * pi * bike.date.trig$month / max(bike.date.trig$month))
+bike.date.trig$ymonth <- sin(2 * pi * bike.date.trig$month / max(bike.date.trig$month))
+
+bike.date.trig$xday <- cos(2 * pi * bike.date.trig$dayofweek / max(bike.date.trig$dayofweek))
+bike.date.trig$yday <- sin(2 * pi * bike.date.trig$dayofweek / max(bike.date.trig$dayofweek))
+
+bike.date.trig$xhour <- cos(2 * pi * bike.date.trig$hour / max(bike.date.trig$hour))
+bike.date.trig$yhour <- sin(2 * pi * bike.date.trig$hour / max(bike.date.trig$hour))
+
+bike.date.trig$xseason <- cos(2 * pi * bike.date.trig$season / max(bike.date.trig$season))
+bike.date.trig$yseason <- sin(2 * pi * bike.date.trig$season / max(bike.date.trig$season))
+
+bike.date.trig$dayofmonth <- as.numeric(bike.date.trig$dayofmonth)
+```
+
+#### Remove Original Time Cols
+
+```{R}
+bike.date.trig$month <- NULL
+bike.date.trig$dayofweek <- NULL
+bike.date.trig$hour <- NULL
+bike.date.trig$season <- NULL
+bike.date.trig$datetime <- NULL
+```
+
+All categorical variables are either already encoded (`holiday` and `workingday`) or have been converted to a numeric form (`season`). Weather is ordinal and therefore shouldn't be one-hot encoded.
+
+## Create Partitions
+
+### Test Partition
+
+```{R}
+library(caret)
+set.seed(1)
+bike.rand <- bike.date.trig[sample(1:nrow(bike.date.trig)),]
+
+set.seed(1)
+inTrain <- createDataPartition(bike.rand$count, p = 0.9, list=F)
+
+bike.trainval <- bike.rand[inTrain,]
+bike.test <- bike.rand[-inTrain,]
+```
+
+### Validation Partition
+
+```{R}
+set.seed(1)
+
+inTrain <- createDataPartition(bike.trainval$count, p = 0.9, list=F)
+
+bike.train <- bike.trainval[inTrain,]
+bike.val <- bike.trainval[-inTrain,]
+```
+
+## Scale Data
+
+```{R}
+train.means <- colMeans(bike.train)
+train.sds <- apply(bike.train, 2, sd)
+
+z_score <- function(x, df){
+  column_num <- which(colSums(df == x) == length(x)) # determine which column we are applying function to
+  mean <- train.means[column_num] # retrieve mean of that column
+  sd <- train.sds[column_num]     # retrieve sd of that column
+  z <- (x - mean)/sd
+  return(z)
+}
+```
+
+### Train Data
+
+```{R}
+bike.train.scale <- bike.train
+bike.train.scale <- as.data.frame(apply(bike.train.scale, 2, function(x) z_score(x, bike.train)))
+bike.train.scale$holiday <- bike.train$holiday
+bike.train.scale$workingday <- bike.train$workingday
+bike.train.scale$count <- bike.train$count
+```
+
+### Validation Data
+
+```{R}
+bike.val.scale <- bike.val
+bike.val.scale <- as.data.frame(apply(bike.val.scale, 2, function(x) z_score(x, bike.val)))
+bike.val.scale$holiday <- bike.val$holiday
+bike.val.scale$workingday <- bike.val$workingday
+bike.val.scale$count <- bike.val$count
+```
+
+### Test Data
+
+```{R}
+bike.test.scale <- bike.test
+bike.test.scale <- as.data.frame(apply(bike.test.scale, 2, function(x) z_score(x, bike.test)))
+bike.test.scale$holiday <- bike.test$holiday
+bike.test.scale$workingday <- bike.test$workingday
+bike.test.scale$count <- bike.test$count
+```
+
+## Create ANN Model
+
+```{R}
+library(keras)
+library(tensorflow)
+
+count <- 8
+
+train.x <- as.matrix(bike.train.scale[,-count])
+train.y <- as.matrix(bike.train.scale[,count])
+
+val <- list(as.matrix(bike.val.scale[,-count]), as.matrix(bike.val.scale[,count]))
+
+model <- keras_model_sequential()                 %>%
+  layer_dense(32, activation = "sigmoid",             # input and first hidden layer
+              input_shape = ncol(train.x))        %>%
+  layer_dense(units = 16, activation = "sigmoid") %>% # second hidden layer
+  layer_dense(units = 1, activation = "relu")         # output layer
+
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'mse',
+  metrics = 'mae'
+)
+
+set.seed(1)
+
+history <- model %>% fit(train.x, train.y, epochs = 100, validation_data=val, batch_size = 64)
+plot(history)
+```
+
+### Tune Hyperparameters
+
+```{R}
+library(tfruns)
+set.seed(1)
+ runs=tuning_run("bike_hyperparams.R",
+            flags = list(
+              learning_rate = c(0.1, 0.01, 0.001, 0.0001),
+              batch_size = c(32,64,1),
+              activation_function = c("sigmoid","tanh", "relu"),
+              units1= c(16,32,64,128),
+              units2= c(16,32,64,128)
+            ),
+            sample = 0.01 #
+ )
+```
+
+### View Best Model
+
+```{R}
+runs=runs[order(runs$metric_val_loss, decreasing=F),]
+
+view_run(runs$run_dir[1])
+```
+
+The best validation MSE (over 30 epochs) was 1.6868 from the following hyperparams:\
+
+learning_rate: 0.01\
+first hidden layer: 128 units\
+second hidden layer: 32 units\
+batch_size: 64\
+activation function: tanh\
+
+This model does not overfit at all. The loss for both the training data and the validation data are at about the same value, and the MAE for the training data and validation data oscilate back and forth throughout the training.
+
+The loss does continue to decrease over each epoch (up to 30), but it is essentially flat by epoch 25.
+
+##Evaluate Best Model
+
+### Train Model Using Full Training Data
+
+```{R}
+bike.fulltrain <- rbind(bike.train.scale, bike.val.scale)
+train.x <- as.matrix(bike.fulltrain[,-count])
+train.y <- as.matrix(bike.fulltrain[,count])
+
+best_model <- keras_model_sequential()         %>%
+  layer_dense(128, activation = "tanh",            # input and first hidden layer
+              input_shape = ncol(train.x))     %>%
+  layer_dense(units = 32, activation = "tanh") %>% # second hidden layer
+  layer_dense(units = 1, activation = "relu")      # output layer
+
+best_model %>% compile(
+  optimizer = optimizer_adam(learning_rate = 0.01),
+  loss = 'mse',
+  metrics = 'mae'
+)
+
+set.seed(1)
+
+history <- best_model %>% fit(train.x, train.y, epochs = 30, batch_size = 64)
+plot(history)
+```
+
+### Test Model Using Test Set
+
+```{R}
+set.seed(1)
+test.x <- as.matrix(bike.test.scale[,-count])
+test.y <- as.matrix(bike.test.scale[,count])
+
+best_model %>% evaluate(test.x, test.y)
+predicted.nums <- best_model %>% predict(test.x)
+
+# undo the square root
+adj.predicted.nums <- predicted.nums^2
+adj.test.y <- test.y^2
+print(paste("RMSE: ", rmse(adj.predicted.nums, adj.test.y)))
+```
+
+### Results
+
+The RMSE of the post-processed data (i.e. after undoing the square root transformation) is 47.5976, which is pretty good considering the overall spread of the original `count` data.
+
+## Use Linear Regression Model
+
+### Train Model
+
+```{R}
+library(ISLR)
+lm.train <- bike.trainval
+logistic_model <- lm(count~., data = as.data.frame(lm.train))
+
+summary(logistic_model)
+```
+
+### Test Model
+
+```{R}
+lm.test <- bike.test
+lm.predictions <- predict(logistic_model, lm.test, type="response")
+adj.lm.predictions <- predictions^2
+adj.lm.test.y <- lm.test$count^2
+print(paste("RMSE: ", rmse(adj.lm.predictions, adj.lm.test.y)))
+```
+
+### Results
+
+The RMSE of the Linear Regression model is approximately 3 times higher than that of the ANN, at 136.1627, proving that the countless hours, blood, sweat, and tears that I put into training the neural networks for this assignment were worth the years they inevitably took off my life trying to get them working properly.

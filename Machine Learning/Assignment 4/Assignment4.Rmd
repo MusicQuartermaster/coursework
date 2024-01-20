@@ -1,0 +1,576 @@
+---
+title: "Assignment4"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Problem 1: Using ANN for Covid Sentiment Classification
+
+## Data Manipulation
+
+### Input and Stem Data
+
+```{R}
+library(qdap)
+library(data.table)
+
+covid <- fread("Corona_NLP_train.csv", encoding="Latin-1")
+
+covid$OriginalTweet=rm_stopwords(covid$OriginalTweet, stopwords=tm::stopwords("english"), separate=FALSE, strip=TRUE)
+
+covid$OriginalTweet=stemmer(covid$OriginalTweet, warn=FALSE)
+```
+
+### Randomize Data and Restrict Results
+
+```{R}
+set.seed(1)
+covid.r <- covid[sample(1:nrow(covid)),]
+covid.s <- covid.r
+covid.s[which(covid.s$Sentiment == "Extremely Positive")]$Sentiment = "Positive"
+covid.s[which(covid.s$Sentiment == "Extremely Negative")]$Sentiment = "Negative"
+
+sentiment = c("Negative", "Neutral", "Positive")
+# 0 = Negative
+# 1 = Neutral
+# 2 = Positive
+```
+
+```{R}
+covid.s$Sentiment <- as.factor(covid.s$Sentiment)
+covid.numeric <- covid.s
+labels=as.numeric(unlist(covid.numeric[,"Sentiment"]))-1
+covid.numeric$Sentiment <- labels
+```
+
+## Prepare Data for ANN
+
+### Create Partitions
+
+```{R}
+covid.train <- covid.numeric[1:26340]
+covid.test <- covid.numeric[26341:32925]
+covid.validation <- covid.numeric[32926:41157]
+```
+
+### Convert Data
+
+```{R}
+library(keras)
+library(tensorflow)
+
+text_vectorizer <- layer_text_vectorization(output_mode="tf_idf", ngrams=2, max_tokens=5000)
+#covid.train$OriginalTweet <- as.factor(covid.train$OriginalTweet)
+text_vectorizer %>% adapt(covid.train$OriginalTweet)
+
+covid.train.dtm = text_vectorizer(covid.train$OriginalTweet)
+covid.test.dtm = text_vectorizer(covid.test$OriginalTweet)
+covid.val.dtm = text_vectorizer(covid.validation$OriginalTweet)
+```
+
+```{R}
+maxInput <- max(max(covid.train.dtm), max(covid.test.dtm), max(covid.val.dtm))
+covid.train.dtm.norm <- covid.train.dtm / maxInput$numpy()
+covid.test.dtm.norm <- covid.test.dtm / maxInput$numpy()
+covid.val.dtm.norm <- covid.val.dtm / maxInput$numpy()
+
+val <- list(covid.val.dtm.norm, covid.validation$Sentiment)
+test = list()
+test$x = covid.test.dtm.norm
+test$y = covid.test$Sentiment
+```
+
+## Training, Tuning, and Evaluation of Neural Network Model
+
+### Training
+
+```{R}
+model <- keras_model_sequential()                   %>%
+  layer_dense(units = 10, activation = "sigmoid",       # input layer
+              input_shape = 5000)                   %>%
+  layer_dense(units = 10, activation = "sigmoid")   %>%   # first hidden layer
+  layer_dense(units = 10, activation = "sigmoid")   %>%   # second hidden layer
+  layer_dense(units = 3, activation = "softmax")          # output layer
+
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'sparse_categorical_crossentropy',
+  metrics = 'accuracy'
+)
+```
+
+```{R, echo=F} 
+# echo off to save time knitting
+set.seed(1)
+
+history <- model %>% fit(covid.train.dtm.norm, covid.train$Sentiment, epochs = 50, validation_data=val, batch_size = 10)
+plot(history)
+```
+
+#### Inital Results
+
+```{R}
+library(gmodels)
+
+predicted.nums <- as.numeric(model %>% predict(covid.test.dtm.norm) %>% k_argmax())
+
+rmse= function(x, y){
+  return ((mean((x - y)^2))^0.5)
+}
+
+predicted.labels <- sentiment[predicted.nums + 1]
+CrossTable(predicted.labels, covid.test$Sentiment)
+
+print(paste("RMSE: ", rmse(predicted.nums, covid.test$Sentiment)))
+```
+
+For each class, the model has a true positive rate of about 70-75%. The model does the best job of predicting Negative sentiments at 76.0%, and predicts Neutral sentiments the worst at 69.5%. Overall, this base model performs decently well considering a model that randomly guesses would expect to get a true positive roughly 33% of the time, whereas the total accuracy of this model is 76.1% on the validation data.
+
+### Tuning
+
+```{R, echo=F} 
+# echo off to save time knitting
+library(tfruns)
+ runs=tuning_run("sentiment_hyperparams.R",
+            flags = list(
+              learning_rate = c(0.1, 0.01, 0.001, 0.0001),
+              batch_size = c(32,64,1),
+              activation_function = c("sigmoid","tanh"),
+              units1= c(16,32,64,128),
+              units2= c(16,32,64,128)
+            ),
+            sample = 0.01 #
+ )
+```
+
+#### Tuning Results
+
+```{R}
+runs=runs[order(runs$metric_val_accuracy, decreasing=TRUE),]
+
+view_run(runs$run_dir[1])
+```
+
+The best model had the following hyperparams:\
+learning_rate: 0.001\
+first hidden layer: 16 units\
+second hidden layer: 128 units\
+batch_size: 1\
+activation function: sigmoid
+
+It seems as though the best model only slightly overfits, having a training accuracy of 80.4% and validation accuracy of 74.6%, and a training loss of .54 and validation loss of .64. The model could be better, but it could also be a lot worse, too.
+
+After 20 epochs, the validation loss is still very slightly decreasing, although there doesn't seem to be a noticeable decrease specifically from epoch 19 to 20.
+
+```{R}
+train.matrix <- as.matrix(covid.train.dtm.norm)
+val.matrix <- as.matrix(covid.val.dtm.norm)
+
+full.train <- rbind(train.matrix, val.matrix)
+full.labels <- append(covid.train$Sentiment, covid.validation$Sentiment)
+```
+
+### Evaluation
+
+```{R}
+best_model <- keras_model_sequential()              %>%
+  layer_dense(units = 16, activation = "sigmoid",       # input layer and first hidden layer
+              input_shape = 5000)                   %>%
+  layer_dense(units = 128, activation = "sigmoid")   %>%   # second hidden layer
+  layer_dense(units = 3, activation = "softmax")          # output layer
+
+best_model %>% compile(
+  optimizer = optimizer_adam(learning_rate = 0.001),
+  loss = 'sparse_categorical_crossentropy',
+  metrics = 'accuracy'
+)
+
+set.seed(1)
+
+history <- best_model %>% fit(full.train, full.labels, epochs = 20, batch_size = 1)
+plot(history)
+```
+
+#### Evaluation Results
+
+```{R}
+predicted.nums <- as.numeric(best_model %>% predict(covid.test.dtm.norm) %>% k_argmax())
+res = predicted.nums == covid.test$Sentiment
+
+predicted.labels <- sentiment[predicted.nums + 1]
+actual.nums <- covid.test$Sentiment
+actual.labels <- sentiment[actual.nums + 1]
+
+ctable <- CrossTable(predicted.labels, actual.labels)
+
+print(paste("RMSE: ", rmse(predicted.nums, covid.test$Sentiment)))
+```
+
+### Precision and Recall
+
+```{R}
+t <- ctable$t
+pr <- data.frame(
+  "True_Positive" = c(0, 0, 0),
+  "True_Negative" = c(0, 0, 0),
+  "False_Positive" = c(0, 0, 0),
+  "False_Negative" = c(0, 0, 0),
+  "Precision" = c(0, 0, 0),
+  "Recall" = c(0, 0, 0)
+)
+
+row.names(pr) <- sentiment
+
+i <- 1
+while(i <= 3){
+  pr$True_Positive[i] <- t[i, i]
+  pr$False_Positive[i] <- sum(t[i, -i])
+  pr$True_Negative[i] <- sum(t[-i, -i])
+  pr$False_Negative[i] <- sum(t[-i, i])
+  pr$Precision[i] <- pr$True_Positive[i] / (pr$True_Positive[i] + pr$False_Positive[i])
+  pr$Recall[i] <- pr$True_Positive[i] / (pr$True_Positive[i] + pr$False_Negative[i])
+  i <- i + 1
+}
+
+print(pr)
+```
+
+The Naive Bayes model had the following Precision and Recall values:
+
+Negative Precision: 0.726752\
+Negative Recall: 0.6900192
+
+Neutral Precision: 0.553553\
+Neutral Recall: 0.7026144
+
+Positive Precision: 0.7576761\
+Positive Recall: 0.7038591
+
+This model performs much better than the Naive Bayes model, scoring a higher value for all but one of the precision/recall values; the only value that was lower this time around was the Neutral class's recall at 0.64 instead of 0.70.
+
+# Problem 2: Predicting Bike Sharing Demand
+
+## Data Exploration
+
+### Data Summary
+
+```{R}
+bike <- read.csv("bike.csv", header = T)
+str(bike)
+summary(bike)
+```
+
+The dataset contains `r nrow(bike)` observations
+
+### Variable types
+
+-   `datetime`: continuous\
+-   `season`: nominal categorical\
+-   `holiday`: nominal categorical\
+-   `workingday`: nominal categorical\
+-   `weather`: ordinal discrete\
+-   `temp`: continuous\
+-   `atemp`: continuous\
+-   `humidity`: continuous\
+-   `windspeed`: continuous\
+-   `casual`: continuous\
+-   `registered`: continuous\
+-   `count`: continuous
+
+### Missing Values:
+
+```{R}
+i <- 1
+while(i <= ncol(bike)){
+  bike[which(is.na(bike[i])),]
+  i <- i + 1
+}
+```
+
+There are no missing values
+
+### Histogram
+
+```{R}
+hist(bike$count, breaks = 250)
+```
+
+The histogram follows a Zipfian distribution. The largest frequency is that of 0 and the histogram has a strong positive skew.
+
+## Feature Engineering
+
+### Remove Columns
+
+```{R}
+bike$registered <- NULL
+bike$casual <- NULL
+```
+
+### Normalize Count
+
+```{R}
+bike.root <- bike
+bike.root$count <- bike.root$count^0.5 # calculate square root of count
+hist(bike.root$count, breaks = 32)
+```
+
+### Extract Date
+
+```{R}
+library(lubridate)
+timeDates <- as.POSIXlt(bike.root$datetime)     # get datetime objects as POSIXlt objects
+bike.date <- bike.root
+bike.date$dayofmonth <- unclass(timeDates)$mday # unclass the POSIXlt object into its columns
+bike.date$year <- unclass(timeDates)$year
+bike.date$dayofweek <- unclass(timeDates)$wday
+bike.date$month <- unclass(timeDates)$mon
+bike.date$hour <- unclass(timeDates)$hour
+```
+
+### Convert Time to Circular
+
+#### Convert Values
+
+```{R}
+bike.date.trig <- bike.date
+bike.date.trig$xmonth <- cos(2 * pi * bike.date.trig$month / max(bike.date.trig$month))
+bike.date.trig$ymonth <- sin(2 * pi * bike.date.trig$month / max(bike.date.trig$month))
+
+bike.date.trig$xday <- cos(2 * pi * bike.date.trig$dayofweek / max(bike.date.trig$dayofweek))
+bike.date.trig$yday <- sin(2 * pi * bike.date.trig$dayofweek / max(bike.date.trig$dayofweek))
+
+bike.date.trig$xhour <- cos(2 * pi * bike.date.trig$hour / max(bike.date.trig$hour))
+bike.date.trig$yhour <- sin(2 * pi * bike.date.trig$hour / max(bike.date.trig$hour))
+
+bike.date.trig$xseason <- cos(2 * pi * bike.date.trig$season / max(bike.date.trig$season))
+bike.date.trig$yseason <- sin(2 * pi * bike.date.trig$season / max(bike.date.trig$season))
+
+bike.date.trig$dayofmonth <- as.numeric(bike.date.trig$dayofmonth)
+```
+
+#### Remove Original Time Cols
+
+```{R}
+bike.date.trig$month <- NULL
+bike.date.trig$dayofweek <- NULL
+bike.date.trig$hour <- NULL
+bike.date.trig$season <- NULL
+bike.date.trig$datetime <- NULL
+```
+
+All categorical variables are either already encoded (`holiday` and `workingday`) or have been converted to a numeric form (`season`). Weather is ordinal and therefore shouldn't be one-hot encoded.
+
+## Create Partitions
+
+### Test Partition
+
+```{R}
+library(caret)
+set.seed(1)
+bike.rand <- bike.date.trig[sample(1:nrow(bike.date.trig)),]
+
+set.seed(1)
+inTrain <- createDataPartition(bike.rand$count, p = 0.9, list=F)
+
+bike.trainval <- bike.rand[inTrain,]
+bike.test <- bike.rand[-inTrain,]
+```
+
+### Validation Partition
+
+```{R}
+set.seed(1)
+
+inTrain <- createDataPartition(bike.trainval$count, p = 0.9, list=F)
+
+bike.train <- bike.trainval[inTrain,]
+bike.val <- bike.trainval[-inTrain,]
+```
+
+## Scale Data
+
+```{R}
+train.means <- colMeans(bike.train)
+train.sds <- apply(bike.train, 2, sd)
+
+z_score <- function(x, df){
+  column_num <- which(colSums(df == x) == length(x)) # determine which column we are applying function to
+  mean <- train.means[column_num] # retrieve mean of that column
+  sd <- train.sds[column_num]     # retrieve sd of that column
+  z <- (x - mean)/sd
+  return(z)
+}
+```
+
+### Train Data
+
+```{R}
+bike.train.scale <- bike.train
+bike.train.scale <- as.data.frame(apply(bike.train.scale, 2, function(x) z_score(x, bike.train)))
+bike.train.scale$holiday <- bike.train$holiday
+bike.train.scale$workingday <- bike.train$workingday
+bike.train.scale$count <- bike.train$count
+```
+
+### Validation Data
+
+```{R}
+bike.val.scale <- bike.val
+bike.val.scale <- as.data.frame(apply(bike.val.scale, 2, function(x) z_score(x, bike.val)))
+bike.val.scale$holiday <- bike.val$holiday
+bike.val.scale$workingday <- bike.val$workingday
+bike.val.scale$count <- bike.val$count
+```
+
+### Test Data
+
+```{R}
+bike.test.scale <- bike.test
+bike.test.scale <- as.data.frame(apply(bike.test.scale, 2, function(x) z_score(x, bike.test)))
+bike.test.scale$holiday <- bike.test$holiday
+bike.test.scale$workingday <- bike.test$workingday
+bike.test.scale$count <- bike.test$count
+```
+
+## Create ANN Model
+
+```{R}
+library(keras)
+library(tensorflow)
+
+count <- 8
+
+train.x <- as.matrix(bike.train.scale[,-count])
+train.y <- as.matrix(bike.train.scale[,count])
+
+val <- list(as.matrix(bike.val.scale[,-count]), as.matrix(bike.val.scale[,count]))
+
+model <- keras_model_sequential()                 %>%
+  layer_dense(32, activation = "sigmoid",             # input and first hidden layer
+              input_shape = ncol(train.x))        %>%
+  layer_dense(units = 16, activation = "sigmoid") %>% # second hidden layer
+  layer_dense(units = 1, activation = "relu")         # output layer
+
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'mse',
+  metrics = 'mae'
+)
+
+set.seed(1)
+
+history <- model %>% fit(train.x, train.y, epochs = 100, validation_data=val, batch_size = 64)
+plot(history)
+```
+
+### Tune Hyperparameters
+
+```{R, echo=F} 
+# echo off to save time knitting
+library(tfruns)
+set.seed(1)
+ runs=tuning_run("bike_hyperparams.R",
+            flags = list(
+              learning_rate = c(0.1, 0.01, 0.001, 0.0001),
+              batch_size = c(32,64,1),
+              activation_function = c("sigmoid","tanh", "relu"),
+              units1= c(16,32,64,128),
+              units2= c(16,32,64,128)
+            ),
+            sample = 0.01 #
+ )
+```
+
+### View Best Model
+
+```{R}
+runs=runs[order(runs$metric_val_loss, decreasing=F),]
+
+view_run(runs$run_dir[1])
+```
+
+The best validation MSE (over 30 epochs) was 2.3711 from the following hyperparams:\
+
+learning_rate: 0.001\
+first hidden layer: 16 units\
+second hidden layer: 64 units\
+batch_size: 1\
+activation function: sigmoid\
+
+This model does not overfit at all. The loss for both the training data and the validation data are at about the same value, and the MAE for the training data and validation data osculate back and forth throughout the training.
+
+The loss does continue to decrease over each epoch (up to 30), but it is essentially flat by epoch 25.
+
+##Evaluate Best Model
+
+### Train Model Using Full Training Data
+
+```{R}
+bike.fulltrain <- rbind(bike.train.scale, bike.val.scale)
+train.x <- as.matrix(bike.fulltrain[,-count])
+train.y <- as.matrix(bike.fulltrain[,count])
+
+best_model <- keras_model_sequential()         %>%
+  layer_dense(128, activation = "tanh",            # input and first hidden layer
+              input_shape = ncol(train.x))     %>%
+  layer_dense(units = 32, activation = "tanh") %>% # second hidden layer
+  layer_dense(units = 1, activation = "relu")      # output layer
+
+best_model %>% compile(
+  optimizer = optimizer_adam(learning_rate = 0.01),
+  loss = 'mse',
+  metrics = 'mae'
+)
+
+set.seed(1)
+
+history <- best_model %>% fit(train.x, train.y, epochs = 30, batch_size = 64)
+plot(history)
+```
+
+### Test Model Using Test Set
+
+```{R}
+set.seed(1)
+test.x <- as.matrix(bike.test.scale[,-count])
+test.y <- as.matrix(bike.test.scale[,count])
+
+best_model %>% evaluate(test.x, test.y)
+predicted.nums <- best_model %>% predict(test.x)
+
+# undo the square root
+adj.predicted.nums <- predicted.nums^2
+adj.test.y <- test.y^2
+print(paste("RMSE: ", rmse(adj.predicted.nums, adj.test.y)))
+```
+
+### Results
+
+The RMSE of the post-processed data (i.e. after undoing the square root transformation) is 47.5976, which is pretty good considering the overall spread of the original `count` data.
+
+## Use Linear Regression Model
+
+### Train Model
+
+```{R}
+library(ISLR)
+lm.train <- bike.trainval
+logistic_model <- lm(count~., data = as.data.frame(lm.train))
+
+summary(logistic_model)
+```
+
+### Test Model
+
+```{R}
+lm.test <- bike.test
+lm.predictions <- predict(logistic_model, lm.test, type="response")
+adj.lm.predictions <- lm.predictions^2
+adj.lm.test.y <- lm.test$count^2
+print(paste("RMSE: ", rmse(adj.lm.predictions, adj.lm.test.y)))
+```
+
+### Results
+
+The RMSE of the Linear Regression model is approximately 3 times higher than that of the ANN, at 136.1627, proving that the countless hours, blood, sweat, and tears that I put into training the neural networks for this assignment were worth the years they inevitably took off my life trying to get them working properly.
