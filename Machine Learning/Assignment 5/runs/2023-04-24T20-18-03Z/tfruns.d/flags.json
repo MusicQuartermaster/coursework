@@ -1,0 +1,8 @@
+{
+  "learning_rate": 0.01,
+  "units1": 32,
+  "units2": 32,
+  "batch_size": 1,
+  "dropout1": 0.1,
+  "dropout2": 0.4
+}

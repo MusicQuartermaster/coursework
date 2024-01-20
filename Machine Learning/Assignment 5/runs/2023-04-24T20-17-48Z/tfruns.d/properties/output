@@ -1,0 +1,16 @@
+
+> FLAGS= flags( 
++     flag_numeric("learning_rate", 0.01),
++     flag_numeric("units1", 32),
++     flag_numeric("units2", 32),
++     flag_numeric("ba ..." ... [TRUNCATED] 
+
+> library(keras)
+
+> ann <- keras_model_sequential() %>%
++   layer_dense(units=FLAGS$units1, input_shape=ncol(train.nzv), activation=FLAGS$activation_function) %>%
++   l .... [TRUNCATED] 
+
+> history <- ann %>% compile( loss="mse", optimizer=optimizer_adam(learning_rate=FLAGS$learning_rate), metric=c("mae") )
+
+> ann %>% fit(as.matrix(train.nzv), as.matrix(train.labels/100000), epochs = 30, batch_size=FLAGS$batch_size, validation_data=list(val, val.labels/100 .... [TRUNCATED] 

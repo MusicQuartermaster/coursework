@@ -1,0 +1,694 @@
+---
+title: "Assignment5"
+output: html_notebook
+---
+
+# Data Cleaning
+
+## Data Summary
+
+```{R}
+housing <- read.csv("housing.csv", stringsAsFactors=T)
+summary(housing)
+str(housing)
+```
+
+### Variable Types
+
+- Id: Continuous
+- MSSubClass: Nominal Categorical (represented numerically)
+- MSZoning: Nominal Categorical
+- LotFrontage: Continuous
+- LotArea: Continuous
+- Street: Nominal Categorical
+- Alley: Nominal Categorical
+- LotShape: Nominal Categorical
+- LandContour: Nominal Categorical
+- Utilities: Nominal Categorical
+- LotConfig: Nominal Categorical
+- LandSlope: Nominal Categorical
+- Neighborhood: Nominal Categorical
+- Condition1: Nominal Categorical
+- Condition2: Nominal Categorical
+- BldgType: Nominal Categorical
+- HouseStyle: Nominal Categorical
+- OverallQual: Discrete Ordinal
+- OverallCond: Discrete Ordinal
+- YearBuilt: Continuous
+- YearRemodAdd: Continuous
+- RoofStyle: Nominal Categorical
+- RoofMatl: Nominal Categorical
+- Exterior1st: Nominal Categorical
+- Exterior2nd: Nominal Categorical
+- MasVnrType: Nominal Categorical
+- MasVnrArea: Continuous
+- ExterQual: Discrete Ordinal
+- ExterCond: Discrete Ordinal
+- Foundation: Nominal Categorical
+- BsmtQual: Discrete Ordinal
+- BsmtCond: Discrete Ordinal
+- BsmtExposure: Discrete Ordinal
+- BsmtFinType1: Discrete Ordinal
+- BsmtFinSF1: Continuous
+- BsmtFinType2: Discrete Ordinal
+- BsmtFinSF2: Continuous
+- BsmtUnfSF: Continuous
+- TotalBsmtSF: Continuous
+- Heating: Nominal Categorical
+- HeatingQC: Discrete Ordinal
+- CentralAir: Nominal Categorical
+- Electrical: Nominal Categorical
+- X1stFlrSF: Continuous
+- X2ndFlrSF: Continuous
+- LowQualFinSF: Continuous
+- GrLivArea: Continuous
+- BsmtFullBath: Continuous
+- BsmtHalfBath: Continuous
+- FullBath: Continuous
+- HalfBath: Continuous
+- BedroomAbvGr: Continuous
+- KitchenAbvGr: Continuous
+- KitchenQual: Discrete Ordinal
+- TotRmsAbvGrd: Continuous
+- Functional: Discrete Ordinal
+- Fireplaces: Continuous
+- FireplaceQu: Discrete Ordinal
+- GarageType: Nominal Categorical
+- GarageYrBlt: Continuous
+- GarageFinish: Discrete Ordinal
+- GarageCars: Continuous
+- GarageArea: Continuous
+- GarageQual: Discrete Ordinal
+- GarageCond: Discrete Ordinal
+- PavedDrive: Discrete Ordinal
+- WoodDeckSF: Continuous
+- OpenPorchSF: Continuous
+- EnclosedPorch: Continuous
+- X3SsnPorch: Continuous
+- ScreenPorch: Continuous
+- PoolArea: Continuous
+- PoolQC: Discrete Ordinal
+- Fence: Discrete Ordinal
+- MiscFeature: Nominal Categorical
+- MiscVal: Continuous
+- MoSold: Nominal Categorical
+- YrSold: Continuous
+- SaleType: Nominal Categorical
+- SaleCondition: Nominal Categorical
+- SalePrice: Continuous
+
+```{R, echo=F}
+# Store these categories into a variable that can be referenced for later
+o <- 0 # ordinal discrete
+n <- 1 # nominal categorical
+c <- 2 # continuous
+cat <- c(c, n, n, c, c, n, n, n, n, n, n, n, n, n, n, n, n, o, o, c, c, n, n, n, n, n, c, o, o, n, o, o, o, o, c, o, c, c, c, n, o, n, n, c, c, c, c, c, c, c, c, c, c, o, c, o, c, o, n, c, o, c, c, o, o, o, c, c, c, c, c, c, o, o, n, c, n, c, n, n, c)
+```
+
+### NA Values
+
+The following columns contain NA values, each with the corresponding percentage:
+
+```{R}
+i <- 1
+while(i <= ncol(housing)){
+  if(sum(is.na(housing[,i])) > 0){
+    print(sprintf("%-15s%f%s", paste(colnames(housing)[i], ":", sep=""), length(which(is.na(housing[,i]))) / nrow(housing) * 100, "%"))
+  }
+  i <- i + 1
+}
+```
+
+### Replace NA Values
+
+```{R}
+replaceNumericNA <- function(column){
+  if(is.numeric(column))
+    column[which(is.na(column))] <- 0
+  return(column)
+}
+replaceFactorNA <- function(column){
+  if(is.numeric(column) || sum(is.na(column)) == 0){
+    return(column)
+  }
+  facna <- addNA(column)
+  levels(facna) <- c(levels(column), "None")
+  return(facna)
+}
+housing.no_na <- housing
+electrical <- housing$Electrical # Electrical does not have a valid NA factor
+housing.no_na <- as.data.frame(lapply(housing.no_na, replaceNumericNA))
+housing.no_na <- as.data.frame(lapply(housing.no_na, replaceFactorNA))
+housing.no_na$Electrical <- electrical
+```
+
+The only column that is actually missing any values is Electrical, and it is missing `r sum(is.na(electrical))` row(s), making up `r sum(is.na(electrical)) / length(electrical) * 100`% of the data.
+
+Since Electrical is the only column with any remaining NA values, the percentage of missing Electrical rows is the same as the percentage of missing rows in the entire dataset.
+
+# Data Exploration
+
+```{R}
+hist(housing.no_na$SalePrice)
+```
+
+The data are positively skewed.
+
+```{R}
+# setup
+library(gmodels)
+library(vcd)
+```
+
+```{R}
+# for each column in the bank dataset, determine the classification of the data by referring to the cat vector and run the appropriate test based on that value
+i <- 1
+data <- housing.no_na
+salePrice <- housing.no_na$SalePrice
+while(i < length(cat)){
+  otherC <- data[,i]
+  otherN <- colnames(data[i])
+  if(cat[i] == c ){
+    plot(salePrice~otherC, main = paste("Sale Price by", otherN), xlab = otherN, ylab = "Sale Price")
+    print(paste("Spearman Rank Test: Sale Price by", otherN, cor(y=salePrice, x=otherC, method="spearman", use="pairwise.complete.obs")))
+  }else if(cat[i] == o){
+    print(paste("Wilcoxon Rank Sum Test: Sale Price by", otherN))
+    print(wilcox.test(y=salePrice, x=as.numeric(otherC)))
+  }else if(cat[i] == n){
+    boxplot(salePrice~otherC, main = paste("Sale Price by", otherN), xlab = otherN, ylab = "Sale Price", outline=F)
+  }
+  i <- i + 1
+}
+```
+
+## Remove Weak Association Columns
+
+```{R}
+housing.removed <- housing.no_na
+housing.removed$Id <- NULL
+housing.removed$LotFrontage <- NULL
+housing.removed$LotArea <- NULL
+housing.removed$LandSlope <- NULL
+housing.removed$MasVnrArea <- NULL
+housing.removed$BsmtFinSF1 <- NULL
+housing.removed$BsmtFinSF2 <- NULL
+housing.removed$BsmtUnfSF <- NULL
+housing.removed$TotalBsmtSF <- NULL
+housing.removed$X2ndFlrSF <- NULL
+housing.removed$LowQualFinSF <- NULL
+housing.removed$BsmtFullBath <- NULL
+housing.removed$BsmtHalfBath <- NULL
+housing.removed$HalfBath <- NULL
+housing.removed$BedroomAbvGr <- NULL
+housing.removed$KitchenAbvGr <- NULL
+housing.removed$WoodDeckSF <- NULL
+housing.removed$OpenPorchSF <- NULL
+housing.removed$EnclosedPorch <- NULL
+housing.removed$X3SsnPorch <- NULL
+housing.removed$ScreenPorch <- NULL
+housing.removed$PoolArea <- NULL
+housing.removed$MiscVal <- NULL
+housing.removed$MoSold <- NULL
+housing.removed$YrSold <- NULL
+housing.removed$MSSubClass <- as.factor(housing.removed$MSSubClass) # Convert to categorical variable
+```
+
+## Remove NA Value
+
+Because only one row has a missing value, we can safely remove the row without affecting the integrity of the data.
+
+```{R}
+housing.removeNA <- na.omit(housing.removed)
+```
+
+# Creating Predictive Models
+
+```{R, echo=F}
+# Create list of RMSE values for each model
+rmse.vals <- list()
+```
+
+## Partition Data
+
+```{R}
+library(caret)
+set.seed(1)
+train_and_val_idx <- createDataPartition(housing.removeNA$MSSubClass, p = 0.8, list = F)
+housing.train_and_val <- housing.removeNA[train_and_val_idx,]
+housing.test <- housing.removeNA[-train_and_val_idx,]
+
+train <- createDataPartition(housing.train_and_val$MSSubClass, p = 0.9, list = F)
+housing.train <- housing.train_and_val[train,]
+housing.val <- housing.train_and_val[-train,]
+
+salePriceIndex <- ncol(housing.train)
+train.data <- housing.train[,-salePriceIndex]
+train.labels <- housing.train[,salePriceIndex]
+
+val.data <- housing.val[,-salePriceIndex]
+val.labels <- housing.val[,salePriceIndex]
+
+test.data <- housing.test[,-salePriceIndex]
+test.labels <- housing.test[,salePriceIndex]
+```
+
+## Lasso
+
+### Train Model
+
+```{R}
+library(glmnet)
+
+set.seed(1)
+lasso <- train(
+  SalePrice~.,
+  data = housing.train_and_val,
+  method="glmnet",
+  preProc="nzv",
+  trControl = trainControl("cv", number=10),
+  tuneGrid = expand.grid(
+    alpha = 1,
+    lambda = 10^seq(-3, 3, length = 100)
+    )
+  )
+```
+
+### Coefficients
+
+```{R}
+coef(lasso$finalModel, lasso$bestTune$lambda)
+```
+
+Many of the columns were shrunk down to 0, meaning they had too little significance in the grand scheme of the model. Since LASSO seeks to penalize large coefficients, it will shrink all coefficients to maintain the model's integrity and thus will shrink down some coefficients to 0.
+
+### Predict
+
+```{R}
+predictions <- predict(lasso, test.data)
+rmse.vals["lasso"] <- RMSE(predictions, test.labels)
+rmse.vals["lasso"]
+```
+
+## Ridge
+
+### Train Model
+
+```{R}
+set.seed(1)
+ridge <- train(
+  SalePrice~.,
+  data = housing.train_and_val,
+  method="glmnet",
+  preProc="nzv",
+  trControl = trainControl("cv", number=10),
+  tuneGrid = expand.grid(
+    alpha = 0,
+    lambda = 10^seq(-3, 3, length = 100)
+    )
+  )
+```
+
+### Coefficients
+
+```{R}
+coef(ridge$finalModel, ridge$bestTune$lambda)
+```
+
+### Predict
+
+```{R}
+predictions <- predict(ridge, test.data)
+rmse.vals["ridge"] <- RMSE(predictions, test.labels)
+rmse.vals["ridge"]
+```
+
+## Elastic Net
+
+### Train Model
+
+```{R}
+library(glmnet)
+
+set.seed(1)
+elastic.net <- train(
+  SalePrice~.,
+  data = housing.train_and_val,
+  method="glmnet",
+  preProc="nzv",
+  trControl = trainControl("cv", number=10),
+  tuneGrid = expand.grid(
+    alpha = seq(0, 1, length = 10),
+    lambda = 10^seq(-3, 3, length = 100)
+    )
+  )
+```
+
+### Coefficients
+
+```{R}
+coef(elastic.net$finalModel, elastic.net$bestTune$lambda)
+```
+
+### Predict
+
+```{R}
+predictions <- predict(elastic.net, test.data)
+rmse.vals["elastic net"] <- RMSE(predictions, test.labels)
+rmse.vals["elastic net"]
+```
+
+# Creating Tree-Ensemble and SVM Models
+
+## Random Forest
+
+### Train Model
+
+```{R}
+set.seed(1)
+random.forest <- train(
+  SalePrice~.,
+  data = housing.train_and_val,
+  method="rf",
+  preProc="nzv",
+  trControl = trainControl("cv", number=10),
+  tuneGrid = expand.grid(
+    mtry = c(2, 4, 8, 16)
+    ),
+  importance=T
+  )
+```
+
+### Predict
+
+```{R}
+predictions <- predict(random.forest, test.data)
+rmse.vals["random forest"] <- RMSE(predictions, test.labels)
+rmse.vals["random forest"]
+```
+
+### Variable Importance
+
+```{R}
+varImp(random.forest, scale=F)
+```
+
+The variables
+
+- GrLivArea
+- X1stFlrSF
+- OverallQual
+- GarageArea
+- GarageCars
+
+were the top 5 predictors, with importance values ranging from 15-28. GrLivArea makes sense as the variable with the most importance, since the Square Footage of the house (above ground) is typically what people look to maximize when searching for a home (as long as the number of bedrooms is acceptable).
+
+## Gradient Boosted Tree
+
+### Train Model
+
+```{R}
+set.seed(1)
+gbm.tree <- train(
+  SalePrice~.,
+  data = housing.train_and_val,
+  method="gbm",
+  preProc="nzv",
+  trControl = trainControl("cv", number=10)
+  )
+```
+
+### Predict
+
+```{R}
+predictions <- predict(gbm.tree, test.data)
+rmse.vals["gbm tree"] <- RMSE(predictions, test.labels)
+rmse.vals["gbm tree"]
+```
+
+## Linear Support Vector Machine Model
+
+### Train Model
+
+```{R}
+set.seed(1)
+
+svm <- train(
+  SalePrice~.,
+  data = housing.train_and_val,
+  method="svmLinear",
+  preProc=c("nzv", "knnImpute"),
+  trControl = trainControl("cv", number=10),
+  tuneGrid = expand.grid(
+    C = seq(0.1, 2, by = 0.1)
+    )
+  )
+```
+
+In the SVM Linear model, the hyperparamter `C` stands for cost, which correlates to the penalty when the model misclassifies a data point, or in the case of regression, it's the weight of the difference from the actual value.
+
+### Predict
+
+```{R}
+predictions <- predict(svm, test.data)
+rmse.vals["linear svm"] <- RMSE(predictions, test.labels)
+rmse.vals["linear svm"]
+```
+
+## Radial Support Vector Machine Model
+
+### Train Model
+
+```{R}
+set.seed(1)
+
+r.svm <- train(
+  SalePrice~.,
+  data = housing.train_and_val,
+  method="svmRadial",
+  preProc=c("nzv", "knnImpute"),
+  trControl = trainControl("cv", number=10),
+  tuneGrid = expand.grid(
+    C = seq(0.1, 2, by = 0.1)
+    ,sigma = seq(0.1, 2, by = 0.1)
+    )
+  )
+```
+
+### Predict
+
+```{R}
+predictions <- predict(r.svm, test.data)
+rmse.vals["radial svm"] <- RMSE(predictions, test.labels)
+rmse.vals["radial svm"]
+```
+
+## Compare Models
+
+### Create List of Models
+
+```{R}
+models <- list(lasso, ridge, elastic.net, random.forest, gbm.tree, svm, r.svm)
+```
+
+### Results
+
+```{R}
+comparisons <- resamples(models, modelNames = c("lasso", "ridge", "elastic net", "random forest", "gbm tree", "linear svm", "radial svm"))
+summary(comparisons)
+```
+
+Depending on how you interpret the table, multiple conclusions could be drawn regarding which model is the best in terms of lowest RMSE. The radial svm without question performed the worst by each metric out of these models.
+
+Based on the median RMSE value of each model, the gbm tree performed the best with a median RMSE value of 27506.77.
+
+Based on the mean RMSE value of each model, the random forest performed the best with a mean RMSE value of 29308.43.
+
+Based on the minimum RMSE value of each model, the linear svm performed the best with a minimum RMSE value of 21297.44.
+
+# Creating a Neural Network Model
+
+## Scale and Normalize Data
+
+```{R}
+preproc <- preProcess(train.data, method="knnImpute")
+
+train.imputed <- predict(preproc, train.data)
+val.imputed <- predict(preproc, val.data)
+test.imputed <- predict(preproc, test.data)
+```
+
+## One-Hot Encode Categorical Values
+
+```{R}
+library(mltools)
+library(data.table)
+train.one_hot <- one_hot(as.data.table(train.imputed))
+val.one_hot <- one_hot(as.data.table(val.imputed))
+test.one_hot <- one_hot(as.data.table(test.imputed))
+```
+
+## Remove NearZeroVar Variables
+
+```{R}
+nzv <- nearZeroVar(train.one_hot)
+train.nzv <- subset(train.one_hot, select= -c(nzv))
+val.nzv <- subset(val.one_hot, select= -c(nzv))
+test.nzv <- subset(test.one_hot, select= -c(nzv))
+```
+
+## Create Model
+
+```{R}
+library(keras)
+library(tensorflow)
+
+ann <- keras_model_sequential() %>%
+  layer_dense(
+     units = 32
+    ,activation = "sigmoid"
+    ,input_shape = ncol(train.nzv)
+    ) %>%                          # input and first hidden layer
+  layer_dense(
+     units = 16
+    ,activation = "sigmoid"
+    ) %>%                          # second hidden layer
+  layer_dense(
+     units = 1
+    ,activation = "relu"
+    )                              # output layer
+
+ann %>% compile(
+  optimizer = 'adam',
+  loss = 'mse',
+  metrics = 'mae'
+)
+```
+
+```{R}
+val <- as.matrix(val.nzv)
+
+set.seed(1)
+tensorflow::set_random_seed(1)
+history <- ann %>% fit(
+   as.matrix(train.nzv)
+  ,as.matrix(train.labels/100000)
+  ,epochs = 100
+  ,validation_data=list(val, val.labels/100000)
+  ,batch_size = 64)
+plot(history)
+```
+
+## Predict
+
+```{R}
+ann %>% evaluate(as.matrix(test.nzv), as.matrix(test.labels/100000))
+predictions <- ann %>% predict(as.matrix(test.nzv)) * 100000
+rmse.vals["artificial neural network"] <- RMSE(predictions, test.labels)
+rmse.vals["artificial neural network"]
+```
+
+## Tune Hyperparameters
+
+```{R} 
+library(tfruns)
+set.seed(1)
+tensorflow::set_random_seed(1)
+runs=tuning_run("housing_hyperparams.R",
+            flags = list(
+               learning_rate = c(0.1, 0.01, 0.001, 0.0001)
+              ,batch_size = c(32,64,1)
+              ,units1= c(16,32,64,128)
+              ,units2= c(16,32,64,128)
+              ,dropout1= c(0.1, 0.2, 0.3, 0.4)
+              ,dropout2= c(0.1, 0.2, 0.3, 0.4)
+            )
+            ,sample = 0.01
+ )
+```
+
+## Results
+
+```{R}
+print(runs)
+```
+
+### Best Model
+
+```{R}
+runs=runs[order(runs$metric_val_loss, decreasing=F),]
+view_run(runs$run_dir[1])
+```
+
+The best model used the following parameters:
+
+- learning_rate: 0.01
+- units1: 64
+- units2: 32
+- batch_size: 32
+- dropout1: 0.1
+- dropout2: 0.4
+
+and resulted in the following validation loss: `r runs$metric_val_loss[1]`
+
+The model definitely doesn't overfit, as the validation loss and MAE are both lower than that of the train loss and MAE.
+
+## Train Best Model
+
+```{R}
+
+train_and_val.nzv <- rbind(train.nzv, val.nzv)
+train_and_val.labels <- append(train.labels, val.labels)
+
+best_ann <- keras_model_sequential() %>%
+  layer_dense(
+     units = 64
+    ,activation = "sigmoid"
+    ,input_shape = ncol(train_and_val.nzv)
+    ) %>%                          # input and first hidden layer
+  layer_dropout(0.1) %>%
+  layer_dense(
+     units = 32
+    ,activation = "sigmoid"
+    ) %>%                          # second hidden layer
+  layer_dropout(0.4) %>%
+  layer_dense(
+     units = 1
+    ,activation = "relu"
+    )                              # output layer
+
+best_ann %>% compile(
+  optimizer = optimizer_adam(learning_rate=0.01),
+  loss = 'mse',
+  metrics = 'mae'
+)
+
+set.seed(1)
+tensorflow::set_random_seed(1)
+history <- best_ann %>% fit(
+   as.matrix(train_and_val.nzv)
+  ,as.matrix(train_and_val.labels/100000)
+  ,epochs = 30
+  ,batch_size = 64)
+plot(history)
+```
+
+## Predict
+
+```{R}
+best_ann %>% evaluate(as.matrix(test.nzv), as.matrix(test.labels/100000))
+predictions <- best_ann %>% predict(as.matrix(test.nzv)) * 100000
+rmse.vals["tuned neural network"] <- RMSE(predictions, test.labels)
+rmse.vals["tuned neural network"]
+```
+
+# Results
+
+## List of RMSE Values
+
+```{R}
+print(rmse.vals)
+```
+
+## Conclusion
+
+When I first ran this code, I got average RMSE values of about 28000-29000 for the first 5 models, but now running it again at the end of this assignment (even with the same seed), those values changed to 30000-33000, which was a bit concerning. Comparing these new values, the tuned neural network performed the best with an RMSE of 30024.14, and the untuned neural network performed the worst with an RMSE of 191097.2. Had the original RMSE values remained, the elastic net would have outperformed the tuned neural network, as the RMSE was around 28500. 
