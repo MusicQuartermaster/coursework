@@ -1,0 +1,408 @@
+---
+title: "Assignment1"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Problem 1: Exploring Realtor Dataset
+
+## Data summary
+
+### Structure
+
+The structure of the data is as follows:
+
+```{R}
+realtor <- read.csv("realtor.csv")
+str(realtor)
+summary(realtor)
+```
+
+### Variable types
+
+-   `status`: nominal categorical\
+-   `price`: ordinal discrete\
+-   `bed`: ordinal discrete\
+-   `bath`: ordinal discrete\
+-   `acre_lot`: continuous\
+-   `full_address`: nominal categorical\
+-   `street`: nominal categorical\
+-   `city`: nominal categorical\
+-   `state`: nominal categorical\
+-   `zip_code`: nominal categorical\
+-   `house_size`: ordinal discrete\
+-   `sold_date`: ordinal categorical
+
+## Data Normalization
+
+### Remove and Count Duplicates
+
+To remove duplicate values from the dataset, we can use the following function call:
+
+```{R}
+# only store unique values in the new dataset
+u_realtor <- unique(realtor)
+```
+
+This results in a dataset of size `r nrow(u_realtor)` instead of size `r nrow(realtor)`, meaning there were `r nrow(realtor) - nrow(u_realtor)` duplicate entries.
+
+### Missing Values
+
+We can display the column headers of the dataset by selecting the columns where the sum of entries that are `NA` is greater than 0 and printing their names.
+
+```{R}
+# display the names of columns where the sum of NA values is greater than 0
+names(which(colSums(is.na(u_realtor)) > 0))
+```
+
+### Remove Outliers (price)
+
+To remove the outliers, first we must calculate the IQR of the `price` data. To do this, we can run the following lines of R code:
+
+```{R}
+# compute the quantiles corresponding to Q1 and Q3
+Q1 <- quantile(u_realtor$price, 0.25, na.rm=T)
+Q3 <- quantile(u_realtor$price, 0.75, na.rm=T)
+
+# find the IQR of the price
+IQR <- IQR(u_realtor$price, na.rm=T)
+
+# compute the upper- and lower-bounds for data to be considered outliers
+upper_bound <- Q3 + (IQR * 1.5)
+lower_bound <- Q1 - (IQR * 1.5)
+
+# only store values that are within the upper- and lower-bounds
+below_upper <- u_realtor[which(u_realtor$price <= upper_bound),]
+non_outliers <- below_upper[which(below_upper$price >= lower_bound),]
+print(non_outliers[order(non_outliers$price),])
+```
+
+The lower-bound of the `price` variable is a negative number, so even the properties that have a `price` of $0 are not considered outliers, and no entries get removed by the lower-bound since there are no properties with a negative value for a `price`. Instead, we can manually remove all houses with `price` less than or equal to $50K:
+
+```{R}
+# remove all values with a price less than 50,000
+non_outliers <- non_outliers[which(non_outliers$price > 50000),]
+print(non_outliers[order(non_outliers$price),])
+```
+## Data Analysis
+
+### Histogram (price)
+
+```{R, echo=F}
+hist(non_outliers$price, xlab = "Price", main = "Histogram of Price")
+```
+The `price` variable is positively skewed with most of the values centering around $300K-400K and a lot of values roughly evenly distributed between $1M-1.6M.
+
+### Boxplot (price)
+
+```{R, echo=F}
+boxplot(non_outliers$price, ylab = "Price", main = "Boxplot of Price")
+```
+
+### Missing Prices
+
+To find the percentage of missing `price` values from the unique entries, we can write:
+
+```{R}
+# compute the number of NA values and divide by the total number of values
+ratio <- length(which(is.na(u_realtor$price))) / length(u_realtor$price)
+
+# multiply by 100 and add a '%' to the end
+paste(ratio * 100, "%", sep = "")
+```
+
+## Data Conversion
+
+### Date Conversion
+
+We can add two new columns to the dataset that store the `sold_month` and the `sold_year` that the property was sold (if at all) by writing the following code:
+
+```{R}
+# turn the sold_date values into Date objects
+formatted_dates <- as.Date(non_outliers$sold_date, format = "%Y-%m-%d")
+
+# extract the month and year from the Dates
+months <- format(formatted_dates, "%m")
+years <- format(formatted_dates, "%Y")
+
+# add the months and years as their own columns into the dataset
+d_realtor <- non_outliers
+d_realtor["sold_month"] <- months
+d_realtor["sold_year"] <- years
+```
+
+and we can print the entries that contain a `sold_date` with this code:
+
+```{R}
+# retrieve the values that contain a sold_month value to determine which properties have and have not been sold
+is_sold <- d_realtor[which(!is.na(d_realtor$sold_month)),]
+
+# only display properties that have been sold
+print(is_sold)
+```
+
+### State Conversion
+
+We can convert the `state` attribute to a factor and print out the summary using the following code:
+
+```{R}
+# convert the state attribute to a factor
+states = as.factor(d_realtor$state)
+
+# replace the old column with the new factor
+d_realtor["state"] <- states
+summary(states)
+```
+
+From here, we can remove the entries where the `state` only appears once by writing
+
+```{R}
+# only allow states that have more than one appearance in the data
+# we locate duplicates both from first->last and last->first as the first value is never considered a duplicate
+s_realtor <- d_realtor[which(duplicated(d_realtor$state) | duplicated(d_realtor$state, fromLast=T)),]
+
+# remove states that no longer have entries in the table
+s_realtor["state"] <- droplevels(s_realtor$state)
+summary(s_realtor$state)
+```
+
+Now every entry of a `state` that only appeared once in the dataset now does not appear at all in the dataset.
+
+## Statistical Analysis
+
+### Side-by-Side Boxplots
+
+We can measure the differences in `price` based on the `state` that the property is in.
+
+```{R}
+# set plot margins to prevent text cutoff
+par(mar = c(7, 5, 4, 1))
+plot(s_realtor$price~s_realtor$state, xlab = "", ylab = "Price", main = "Boxplot of Price vs. State", las = 2, na.rm=T)
+```
+
+Here we can clearly see that there is a clear difference in `price` distribution based on the `state`. For example, the boxplot for the `state` `Virginia` shows that 75% of the data exists between $`r quantile(s_realtor$price[(which(s_realtor$state=="Virginia"))], 0.25) ` and $`r max(s_realtor$price[(which(s_realtor$state=="Virginia"))])` , whereas the boxplot for the `state` `Puerto Rico` shows that 75% of the data exists entirely between $`r min(s_realtor$price[(which(s_realtor$state=="Puerto Rico"))])` and $`r quantile(s_realtor$price[(which(s_realtor$state=="Puerto Rico"))], 0.75)` .
+
+### ANOVA Test
+
+To mathematically confirm this, we can perform a one-way ANOVA test.
+
+```{R}
+anova <- oneway.test(s_realtor$price~s_realtor$state)
+print(anova)
+```
+
+Here, we get a `p-value` of `r anova$p.value`, which is less than the $\alpha$ value of 0.05 (and in fact we can go much, much smaller than that, as the $\alpha$ value used in the built-in ANOVA test is 2.2e-16), meaning there is a statistically significant difference between the average house price for different states.
+
+### Spearman Rank Correlation
+
+To determine the correlation between two numeric variables, we can perform the Spearman Rank correlation test between each pair of variables. This results in the following four code chunks:
+
+#### Sold Year
+```{R}
+cor(y=s_realtor$price, x=as.numeric(s_realtor$sold_year), method="spearman", use="pairwise.complete.obs")
+```
+
+Since the value of the coefficient is a very small negative number, we can conclude that there is statistically no correlation between the year the property was sold and its price.
+
+#### House Size
+```{R}
+cor(y=s_realtor$price, x=s_realtor$house_size, method="spearman", use="pairwise.complete.obs")
+```
+
+For the house size, we can see that the coefficient is significantly larger at $\approx$ 0.43. This indicates there is a moderate positive correlation between house size and price.
+
+#### Bed
+```{R}
+cor(y=s_realtor$price, x=s_realtor$bed, method="spearman", use="pairwise.complete.obs")
+```
+
+For the number of beds, we can see that the coefficient is not as large at only $\approx$ 0.24. This indicates there is a weak positive correlation between number of beds and price.
+
+#### Bath
+```{R}
+cor(y=s_realtor$price, x=s_realtor$bath, method="spearman", use="pairwise.complete.obs")
+```
+
+For the number of baths, we can see that the coefficient is also $\approx$ 0.44. This indicates there is a moderate positive correlation between number of baths and price.
+
+--------------------------------------
+
+# Problem 2: Exploring Airline Dataset
+
+## Data Summary
+
+### Structure
+
+```{R}
+airline <- read.csv("airline_satisfaction.csv")
+summary(airline)
+str(airline)
+```
+
+### Variable Types
+
+`X`: ordinal discrete\
+`id`: ordinal discrete\
+`Gender`: nominal categorical\
+`Customer.Type`: nominal categorical\
+`Age`: ordinal discrete\
+`Type.of.Travel`: nominal categorical\
+`Class`: ordinal categorical\
+`Flight.Distance`: ordinal discrete\
+`Inflight.wifi.service`: ordinal discrete\
+`Departure.Arrival.time.convenient`: ordinal discrete\
+`Ease.of.Online.booking`: ordinal discrete\
+`Gate.location`: ordinal discrete\
+`Food.and.drink`: ordinal discrete\
+`Online.boarding`: ordinal discrete\
+`Seat.comfort`: ordinal discrete\
+`Inflight.entertainment`: ordinal discrete\
+`On.board.service`: ordinal discrete\
+`Leg.room.service`: ordinal discrete\
+`Baggage.handling`: ordinal discrete\
+`Checkin.service`: ordinal discrete\
+`Inflight.service`: ordinal discrete\
+`Cleanliness`: ordinal discrete\
+`Departure.Delay.in.Minutes`: ordinal discrete\
+`Arrival.Delay.in.Minutes`: ordinal discrete\
+`satisfaction`: ordinal discrete
+
+```{R, echo=F}
+# Store these categories into a variable that can be referenced for later
+o <- 0
+n <- 1
+cat <- c(n, n, o, n, n, o, o, o, o, o, o, o, o, o, o, o, o, o, o, o, o, o)
+```
+
+### Missing Values
+
+We can display the column headers of the dataset by selecting the columns where the sum of entries that are `NA` is greater than 0 and printing their names.
+
+```{R}
+# display the names of columns where the sum of NA values is greater than 0
+names(which(colSums(is.na(airline)) > 0))
+```
+
+## Remove `id` and `X`
+
+```{R}
+airline$X <- NULL
+airline$id <- NULL
+```
+
+## Data Analysis (Satisfaction)
+
+```{R, echo=F}
+# setup
+library(gmodels)
+library(vcd)
+
+# create ordinal vector for satisfaction values for Spearman rank correlation
+ordinal_satisfaction <- airline[,"satisfaction"]
+ordinal_satisfaction[which(ordinal_satisfaction == "neutral or dissatisfied")] <- 1
+ordinal_satisfaction[which(ordinal_satisfaction == "satisfied")] <- 2
+
+# create ordinal vector for Class values for Spearman rank correlation
+ordinal_class <- airline[,"Class"]
+ordinal_class[which(ordinal_class == "Eco")] <- 1
+ordinal_class[which(ordinal_class == "Eco Plus")] <- 2
+ordinal_class[which(ordinal_class == "Business")] <- 3
+
+# create a data frame to store the values calculated from the Spearman rank correlations
+spearman_vals <- data.frame(0)
+```
+
+### Mosaic Plots and ChiSquare Tests | Spearman Rank Correlations
+
+We can perform a Mosaic Plot and ChiSquare test on the nominal data and the Spearman Rank correlations on the ordinal data using the followng code:
+
+```{R}
+# for each column in the airline dataset, determine the classification of the data by referring to the cat vector and run the appropriate test based on that value
+c <- 1
+while(c < length(airline)){
+  otherC <- airline[,c]
+  otherN <- colnames(airline[c])
+  
+  #skip class, as the data represents ordinal values but is not formatted numerically
+  if(otherN == "Class"){
+    c <- c + 1
+    next
+  }
+  if(cat[c] == n){
+    # nominal value, use mosaic plot and chi-sq test
+    mosaicplot(table(otherC, ordinal_satisfaction), xlab = otherN, ylab = "Satisfcation", main = paste("Satisfaction by", otherN), shade=T)
+    CrossTable(otherC, ordinal_satisfaction, chisq=T)
+  }else{
+    # ordinal value, use Spearman rank correlation instead
+    spearman_vals[otherN] <- cor(y=as.numeric(ordinal_satisfaction), x=as.numeric(otherC), method="spearman", use="pairwise.complete.obs")
+  }
+  c <- c + 1
+}
+# remove placeholder value from vector
+spearman_vals[1] <- NULL
+
+# manually run remaining ordinal class vector
+spearman_vals["Class"] <- cor(y=as.numeric(ordinal_satisfaction), x=as.numeric(ordinal_class), method="spearman", use="pairwise.complete.obs")
+
+print(spearman_vals)
+```
+
+## Data Interpretations
+
+### Mosaic Plots and ChiSquared Tests
+
+#### Gender
+
+According to the Mosaic Plot for Satisfaction by Gender, `Gender` seems to play the least important role in determining a customer's satisfaction. There is a slightly higher tendency for males to report being satisfied, and a slightly lower tendency for females to report being satisfied, but ultimately the data is roughly even.\
+According to the ChiSquared test, there is a statistically significant correlation between `Gender` and `satisfaction`, as the `p-value` is much lower than the $\alpha$ 0.05 at 8.27e-05.
+
+#### Customer Type
+
+The `Customer.Type` Mosaic reveals there is a much higher frequency of loyal customers that report being satisfied as opposed to disloyal customers, which is to be expected for such a statistic.\
+The statistical significance is so great, in fact, that the `p-value` from the ChiSquared test is actually so low it is essentially 0. As a matter of fact, every other nominal value resulted in a p-value that is essentially 0, meaning `Gender` was the only variable with any shred of doubt as to its correlation.
+
+#### Type of Travel
+
+This Mosaic Plot contained the lowest frequency of satisfied customers, revealing that those who traveled for personal reasons were rarely satisfied, especially compared to those who traveled for business, who were satisfied significantly more frequently than 50% of the time.\
+As mentioned before, this ChiSquared test also resulted in a `p-value` of 0, implying a heavy bivariate correlation.
+
+#### Mosaic Conclusions
+
+Unfortunately, these nominal categories are not something the airline can completely control: Gender is set per customer, as well as their reason for travel, and brand loyalty is not something that can really be established with a customer that is typically disloyal without exceptional and unmatched service. Areas to look for improvement should be those in the Spearman Rank correlations.
+
+### Spearman Rank Correlations
+
+#### Results
+
+The results of the Spearman Rank correlations are as follows:
+
+* Positive Correlation
+    + Very Weak (0.01 to 0.19)
+        - `Age` (0.15)
+        - `Ease.of.Online.booking` (0.18)
+    + Weak (0.20 to 0.39)
+        - `Flight.Distance` (0.26)
+        - `Inflight.wifi.service` (0.29)
+        - `Food.and.drink` (0.21)
+        - `Seat.comfort` (0.36)
+        - `On.board.service` (0.33)
+        - `Leg.room.service` (0.32)
+        - `Baggage.handling` (0.27)
+        - `Checkin.service` (0.23)
+        - `Inflight.service` (0.27)
+        - `Cleanliness` (0.30)
+    + Moderate (0.49 - 0.60)
+        - `Inflight.entertainment` (0.40)
+        - `Online.boarding` (0.55)
+        - `Class` (0.50)
+* Negative Correlation
+    + Very Weak (-0.01 to -0.19)
+        - `Departure.Delay.in.Minutes` (-0.07)
+        - `Arrival.Delay.in.Minutes` (-0.10)
+* No Correlation (0.00)
+    + `Gate.location`
+
+#### Spearman Rank Conclusions
+
+Looking at this data, it is obvious that the in-flight entertainment, online boarding availability, and class are the most important aspects in terms of increasing customer satisfaction. Of the variables in the Moderate category, the three most notable are the seat comfort, on-board service, and leg room. While aspects like class, leg room, and seat comfort are more difficult to adjust without completely renovating the current planes or commissioning new ones, the in-flight entertainment, online boarding, and on-board service can very easily be improved with little to no cost increases or consequences.
