@@ -1,0 +1,10 @@
+{
+  "learning_rate": 0.1,
+  "units1": 16,
+  "units2": 128,
+  "batch_size": 16,
+  "dropout1": 0.2,
+  "dropout2": 0.3,
+  "epochs": 10,
+  "activation_function": "sigmoid"
+}

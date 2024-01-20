@@ -1,0 +1,699 @@
+---
+title: "Final Project"
+author: "Annalise Fry & Noah Houtchens"
+date: "2023-04-30"
+output: html_notebook
+---
+
+# Final Project: Predict the Genetic Disorder
+
+## Dataset Source:
+
+https://www.kaggle.com/datasets/mukund23/predict-the-genetic-disorder?select=train.csv
+
+## Data Exploration and Preprocessing
+
+```{r, echo=F}
+library(tidyr)
+library(gmodels)
+library(vcd)
+library(keras)
+library(tensorflow)
+library(caret)
+library(mltools)
+library(data.table)
+library(ISLR)
+library(glmnet)
+library(stringr)
+library(C50)
+```
+
+```{R}
+#We first import our dataset and rename the columns for clarity.
+geneticDisorder <- read.csv("train.csv", header = TRUE, na.strings = c(""," ","-"))
+colnames(geneticDisorder)=c("patientID", "patientAge", "genesInMothersSide", "inheritedFromFather", "maternalGene", "paternalGene", "bloodCellCount", "patientFirstName", "familyName", "fathersName", "mothersAge", "fathersAge", "instituteName", "instituteLocation", "status", "respiratoryRate", "heartRate", "test1", "test2", "test3", "test4", "test5", "parentalConsent", "followUp", "gender", "birthAsphyxia", "defectInAutopsy", "placeOfBirth", "folicAcidDetails", "seriousMaternalIllnessHistory", "radiationExposureHistory", "substanceAbuseHistory", "assistedConception", "anomalyHistory", "numberOfPriorAbortions", "birthDefects", "whiteBloodCellCount", "bloodTestResult", "symptom1", "symptom2", "symptom3", "symptom4", "symptom5", "disorder", "disorderSubclass")
+
+#We will also remove the following columns, as they are not relevant to the disorders: Patient ID, Patient First Name, Family Name, Father's Name
+geneticDisorder = subset(geneticDisorder, select = -c(1, 8, 9, 10))
+```
+
+```{r}
+#The structure and summary of the dataset are shown below. From this we learn that there are a total of 22,083 observations of 41 variables. The variables include 25 categorical and 16 numerical. 
+str(geneticDisorder)
+summary(geneticDisorder)
+```
+
+
+### Remove NA Values
+
+```{r}
+#Next, we need to find which columns have missing values
+colSums(is.na(geneticDisorder))
+```
+```{r}
+#For variables in which NA means not applicable, we replace NA with 0 for numeric variables (as long as it makes sense to do so) and we replace NA with "Not applicable" for categorical variables.
+
+Mode <- function(x){
+ux <- na.omit(unique(x) )
+tab <- tabulate(match(x, ux)); ux [tab == max(tab) ]
+}
+
+# impute NA values
+i <- 1
+while(i <= ncol(geneticDisorder) - 2){
+  col <- geneticDisorder[,i]
+  if(mode(col) == "character"){
+    # categorical, impute mode
+    col[which(is.na(col))] <- Mode(col)
+  }else if(mode(col) == "numeric"){
+    # numeric, impute mean
+    col[which(is.na(col))] <- mean(na.omit(col))
+  }
+  geneticDisorder[,i] <- col
+  i <- i + 1
+}
+
+colSums(is.na(geneticDisorder))
+```
+
+```{r}
+#Additionally, observations that are missing the target variable are not useful for prediction. We will remove these as well. 
+
+geneticDisorder <- geneticDisorder %>% drop_na(disorderSubclass)
+colSums(is.na(geneticDisorder))
+```
+
+```{R}
+# impute correct value for disorder based on disorder subclass
+disorderTypeDictionary = c()
+i <- 1
+while(i <= nrow(geneticDisorder)){
+  row <- geneticDisorder[i,]
+  if(!is.na(row$disorder) && !(row$disorderSubclass %in% names(disorderTypeDictionary))){
+    disorderTypeDictionary[row$disorderSubclass] = row$disorder
+  }
+  i <- i + 1
+}
+```
+
+```{R}
+geneticDisorder$disorder <- disorderTypeDictionary[geneticDisorder$disorderSubclass]
+colSums(is.na(geneticDisorder))
+```
+
+### Statistical Tests for Association
+
+```{r}
+
+#We will run the appropriate test based on the mode of the column to determine the association between the variables and the target Disorder
+
+i <- 1
+data <- geneticDisorder
+disorder <- geneticDisorder$disorderSubclass
+while(i < ncol(data)){
+  otherC <- data[,i]
+  otherN <- colnames(data[i])
+  if(mode(otherC) == "character" ){
+    # Categorical to Categorical: Mosaic and Chi-Sq Test
+    mosaicplot(table(otherC, disorder), xlab = otherN, ylab = "Disorder", main = paste("Disorder by", otherN), shade=T)
+    print(paste("Chi-Sq Test:", "Disorder by", otherN))
+    CrossTable(otherC, disorder, chisq=T)
+  }else if(mode(otherC) == "numeric"){
+    # Categorical to Continuous: Side-By-Side Boxplot
+    boxplot(otherC~disorder, main = paste("Disorder by", otherN), xlab = "Disorder", ylab = otherN, outline=T)
+    #print(paste("T-Test:", "Disorder by", otherN))
+    #print(t.test(otherC, as.numeric(as.factor(disorder)), alternative="two.sided"))
+    print(paste("ANOVA Test:", "Disorder by", otherN))
+    anova <- oneway.test(otherC~disorder)
+	  print(anova)
+  }
+  i <- i + 1
+}
+```
+
+### Remove Low Association Variables
+
+```{r}
+#Given the p-values from the tests above, we will remove the variables with low association to the target Disorder.
+# alpha = 0.01
+geneticDisorder = subset(geneticDisorder, select = -c(
+  1,  # Patient Age
+  6,  # Blood Cell Count
+  7,  # Mother's Age
+  8,  # Father's Age
+  9,  # Institute Name
+  10, # Institute Location
+  11, # Status
+  12, # Respiratory Rate
+  13, # Heart Rate
+  14, # Test 1
+  15, # Test 2
+  16, # Test 3
+  17, # Test 4
+  18, # Test 5
+  19, # Parental Consent
+  20, # Follow Up
+  21, # Gender
+  22, # Birth Asphyxia
+  23, # Defect In Autopsy
+  24, # Place of Birth
+  25, # Folic Acid Details
+  26, # Serious Maternal Illness History
+  27, # Radiation Exposure History
+  28, # Substance Abuse History
+  29, # Assisted Conception
+  30, # Anomaly History
+  31, # Number of Prior Abortions
+  32, # Birth Defects
+  33  # White Blood Cell Count
+  ))
+str(geneticDisorder)
+
+```
+
+### Convert Strings to Factors
+
+```{R}
+originalDisorder <- geneticDisorder$disorderSubclass
+disorder <- as.numeric(as.factor(geneticDisorder$disorderSubclass)) - 1
+
+i <- 1
+while(i <= ncol(geneticDisorder)){
+  if(mode(geneticDisorder[,i]) == "character"){
+    geneticDisorder[,i] <- as.factor(geneticDisorder[,i])
+    #geneticDisorder[,i] <- as.numeric(geneticDisorder[,i])
+  }
+  geneticDisorder[,i] <- geneticDisorder[[i]]
+  i <- i + 1
+}
+
+geneticDisorder$disorderSubclass <- disorder
+
+```
+
+### One Hot Encode Categorical Data
+
+```{R}
+originalData <- geneticDisorder
+geneticDisorder <- one_hot(as.data.table(geneticDisorder))
+```
+
+## Create Models
+
+```{R}
+# Create list of accuracy values
+accuracies = list()
+```
+
+### Split Data
+
+```{R}
+set.seed(1)
+train.val <- createDataPartition(geneticDisorder$disorderSubclass, p = 0.8, list = F)
+geneticDisorder.train_and_val <- geneticDisorder[train.val,]
+unencoded.train <- originalData[train.val,]
+
+geneticDisorder.test <- geneticDisorder[-train.val,]
+unencoded.test <- originalData[-train.val,]
+original.test.labels <- originalDisorder[-train.val]
+
+train <- createDataPartition(geneticDisorder.train_and_val$disorderSubclass, p = 0.8, list = F)
+geneticDisorder.train <- geneticDisorder.train_and_val[train,]
+geneticDisorder.val <- geneticDisorder.train_and_val[-train,]
+```
+
+### Artificial Neural Network
+
+#### Create Model
+
+```{R}
+train.x <- geneticDisorder.train[,!"disorderSubclass"]
+train.y <- geneticDisorder.train$disorderSubclass
+
+val = as.matrix(geneticDisorder.val[,!"disorderSubclass"])
+val.labels = geneticDisorder.val$disorderSubclass
+
+test.data = geneticDisorder.test[,!"disorderSubclass"]
+test.labels = geneticDisorder.test$disorderSubclass
+```
+
+```{R}
+inputUnits = ncol(train.x)
+model <- keras_model_sequential()                   %>%
+  layer_dense(units = 64, activation = "sigmoid",         # input layer
+              input_shape = inputUnits)             %>%
+  layer_dense(units = 32, activation = "sigmoid")   %>%   # first hidden layer
+  layer_dense(units = 16, activation = "sigmoid")   %>%   # second hidden layer
+  layer_dense(units = 9, activation = "softmax")          # output layer
+
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'sparse_categorical_crossentropy',
+  metrics = 'accuracy'
+)
+```
+
+#### Train Model
+
+```{R}
+set.seed(1)
+tensorflow::set_random_seed(1)
+history <- model %>%
+  fit(as.matrix(train.x)
+    , as.matrix(train.y)
+    , epochs = 10
+    , validation_data=list(val, val.labels)
+    , batch_size = 10)
+plot(history)
+```
+
+```{R}
+evaluate(model, as.matrix(test.data), list(test.labels))
+predictions <- model %>% predict(as.matrix(test.data))
+```
+
+#### Tune Hyperparameters
+
+```{R} 
+library(tfruns)
+set.seed(1)
+tensorflow::set_random_seed(1)
+runs=tuning_run("disorder_hyperparams.R",
+            flags = list(
+               learning_rate = c(0.1, 0.01, 0.001)
+              ,batch_size = c(32,16)
+              ,units1= c(16,32,128)
+              ,units2= c(16,32,128)
+              ,dropout1= c(0.1, 0.2, 0.3)
+              ,dropout2= c(0.1, 0.2, 0.3)
+            )
+            ,sample = 0.01
+ )
+```
+
+#### Results
+
+```{R}
+runs=runs[order(runs$metric_val_loss, decreasing=F),]
+print(runs)
+view_run(runs$run_dir[1])
+```
+
+#### Best Model
+
+Learning Rate:          0.001
+units1:                 128
+units2:                 128
+batch size:             16
+dropout1:               0.3
+dropout2:               0.2
+
+```{R}
+learningRate = 0.001
+units1 = 128
+units2 = 128
+batchSize = 16
+dropout1 = 0.2
+dropout2 = 0.2
+epochs = 9
+activation = "sigmoid"
+
+model <- keras_model_sequential()                       %>%
+  layer_dense(units = units1, activation = activation,      # input layer
+              input_shape = inputUnits)                 %>% # first hidden layer
+  layer_dropout(dropout1)                               %>% # dropout layer
+  layer_dense(units = units2, activation = activation)  %>% # second hidden layer
+  layer_dropout(dropout2)                               %>% # dropout layer
+  layer_dense(units = 9, activation = "softmax")            # output layer
+
+model %>% compile(
+  optimizer=optimizer_adam(learning_rate=learningRate),
+  loss = 'sparse_categorical_crossentropy',
+  metrics = 'accuracy'
+)
+
+set.seed(1)
+tensorflow::set_random_seed(1)
+history <- model %>%
+  fit(as.matrix(train.x)
+    , as.matrix(train.y)
+    , epochs = 20
+    , validation_data=list(val, val.labels)
+    , batch_size = batchSize)
+plot(history)
+```
+
+
+```{R}
+final.x <- geneticDisorder.train_and_val[,!"disorderSubclass"]
+final.y <- geneticDisorder.train_and_val$disorderSubclass
+
+best.model <- keras_model_sequential()                  %>%
+  layer_dense(units = units1, activation = activation,      # input layer
+              input_shape = inputUnits)                 %>% # first hidden layer
+  layer_dropout(dropout1)                               %>% # dropout layer
+  layer_dense(units = units2, activation = activation)  %>% # second hidden layer
+  layer_dropout(dropout2)                               %>% # dropout layer
+  layer_dense(units = 9, activation = "softmax")            # output layer
+
+best.model %>% compile(
+  optimizer=optimizer_adam(learning_rate=learningRate),
+  loss = 'sparse_categorical_crossentropy',
+  metrics = 'accuracy'
+)
+
+set.seed(1)
+tensorflow::set_random_seed(1)
+history <- best.model %>%
+  fit(as.matrix(final.x)
+    , as.matrix(final.y)
+    , epochs = epochs
+    , batch_size = batchSize)
+plot(history)
+```
+
+#### Evaluate Best Model
+
+```{R}
+res <- evaluate(best.model, as.matrix(test.data), list(test.labels))
+accuracies["ANN"] <- res[2]
+predictions <- best.model %>% predict(as.matrix(test.data))
+```
+
+```{R}
+values = array()
+i <- 1
+while(i <= nrow(predictions)){
+  max <- -Inf
+  j <- 1
+  while(j <= ncol(predictions)){
+    if(predictions[i,j] > max){
+      max = predictions[i,j]
+      values[i] = j - 1
+    }
+    j <- j + 1
+  }
+  i <- i + 1
+}
+```
+
+#### Print Results
+
+```{R}
+values <- factor(values, levels=c(0:8))
+tbl <- table(test.labels, values)
+print(tbl)
+```
+
+#### Error, Precision, and Recall
+
+```{R}
+i <- 1
+while(i <= 9){
+  print(i - 1)
+  tp = tbl[i,i]
+  tn = length(test.labels) - length(which(values == i - 1)) - length(which(test.labels == i - 1)) + tp
+  fp = length(which(values == i - 1)) - tp
+  fn = length(which(test.labels == i - 1)) - tp
+  print(paste("TP:",tp))
+  print(paste("TN:",tn))
+  print(paste("FP:",fp))
+  print(paste("FN:",fn))
+  print(paste("Error:", (fp+fn)/sum(tbl)))
+  print(paste("Precision:", tp / (tp + fp)))
+  print(paste("Recall:", tp / (tp + fn)))
+  i <- i + 1
+}
+```
+
+### Naive Bayes
+
+#### Train Model
+
+```{R}
+library(e1071)
+set.seed(1)
+classifier <- naiveBayes(final.x, final.y)
+```
+
+#### Test Model
+
+```{R}
+predictions <- classifier %>% predict(test.data)
+```
+
+#### Print Results
+
+```{R}
+tbl <- table(test.labels, predictions)
+print(tbl)
+acc <- test.labels == predictions
+```
+
+```{R}
+accuracies["Naive Bayes"] <- length(which(acc)) / length(predictions)
+print(paste("Naive Bayes Accuracy:", accuracies["Naive Bayes"]))
+```
+
+#### Error, Precision, and Recall
+
+```{R}
+values <- predictions
+i <- 1
+while(i <= 9){
+  print(i - 1)
+  tp = tbl[i,i]
+  tn = length(test.labels) - length(which(values == i - 1)) - length(which(test.labels == i - 1)) + tp
+  fp = length(which(values == i - 1)) - tp
+  fn = length(which(test.labels == i - 1)) - tp
+  print(paste("TP:",tp))
+  print(paste("TN:",tn))
+  print(paste("FP:",fp))
+  print(paste("FN:",fn))
+  print(paste("Error:", (fp+fn)/sum(tbl)))
+  print(paste("Precision:", tp / (tp + fp)))
+  print(paste("Recall:", tp / (tp + fn)))
+  i <- i + 1
+}
+```
+
+### Logistic Model
+
+#### Scale Data
+
+```{R}
+set.seed(1)
+scaled.train <- unencoded.train
+scale = max(scaled.train$disorderSubclass)
+scaled.train$disorderSubclass <- scaled.train$disorderSubclass / scale
+
+scaled.test <- unencoded.test[,-ncol(unencoded.test)]
+glmData <- data.frame(scaled.train)
+```
+
+#### Create Model
+
+```{R}
+logistic_model <- glm(disorderSubclass~., family="binomial", data = glmData)
+
+summary(logistic_model)
+```
+
+#### Test Model
+
+```{R}
+predictions <- predict(logistic_model, as.data.frame(scaled.test), type="response") * scale
+predictions <- round(predictions)
+```
+
+#### Print Results
+
+```{R}
+head(predictions)
+
+accuracies["Logistic Model"] <- length(which(predictions == unencoded.test$disorderSubclass))/length(predictions)
+print(paste("Logistic Model Accuracy:", accuracies["Logistic Model"]))
+```
+
+```{R}
+values <- factor(predictions, levels=c(0:8))
+tbl <- table(unencoded.test$disorderSubclass, values)
+print(tbl)
+```
+
+#### Error, Precision, and Recall
+
+```{R}
+i <- 1
+while(i <= 9){
+  print(i - 1)
+  tp = tbl[i,i]
+  tn = length(test.labels) - length(which(values == i - 1)) - length(which(test.labels == i - 1)) + tp
+  fp = length(which(values == i - 1)) - tp
+  fn = length(which(test.labels == i - 1)) - tp
+  print(paste("TP:",tp))
+  print(paste("TN:",tn))
+  print(paste("FP:",fp))
+  print(paste("FN:",fn))
+  print(paste("Error:", (fp+fn)/sum(tbl)))
+  print(paste("Precision:", tp / (tp + fp)))
+  print(paste("Recall:", tp / (tp + fn)))
+  i <- i + 1
+}
+```
+
+### Elastic Net
+
+#### Train Model
+
+```{R}
+net.data <- data.frame(final.x, final.y)
+
+set.seed(1)
+elastic.net <- train(
+  final.y~.,
+  data = net.data,
+  method="glmnet",
+  preProc="nzv",
+  trControl = trainControl("cv", number=10),
+  tuneGrid = expand.grid(
+    alpha = seq(0, 1, length = 10),
+    lambda = 10^seq(-3, 3, length = 100)
+  )
+)
+```
+
+#### Coefficients
+
+```{R}
+coef(elastic.net$finalModel, elastic.net$bestTune$lambda)
+```
+
+#### Print Results
+
+```{R}
+noSpaces <- test.data
+colnames(noSpaces) <- str_replace_all(colnames(noSpaces), "[ ()-]", ".")
+predictions <- predict(elastic.net, noSpaces)
+values <- round(predictions)
+
+accuracies["Elastic Net"] <- length(which(values == test.labels))/length(values)
+
+print(paste("Elastic Net Model Accuracy:", accuracies["Elastic Net"]))
+```
+
+
+```{R}
+values <- factor(values, levels=c(0:8))
+tbl <- table(test.labels, values)
+print(tbl)
+```
+
+#### Error, Precision, and Recall
+
+```{R}
+i <- 1
+while(i <= 9){
+  print(i - 1)
+  tp = tbl[i,i]
+  tn = length(test.labels) - length(which(values == i - 1)) - length(which(test.labels == i - 1)) + tp
+  fp = length(which(values == i - 1)) - tp
+  fn = length(which(test.labels == i - 1)) - tp
+  print(paste("TP:",tp))
+  print(paste("TN:",tn))
+  print(paste("FP:",fp))
+  print(paste("FN:",fn))
+  print(paste("Error:", (fp+fn)/sum(tbl)))
+  print(paste("Precision:", tp / (tp + fp)))
+  print(paste("Recall:", tp / (tp + fn)))
+  i <- i + 1
+}
+```
+
+### C5.0 Model
+
+#### Train Model
+
+```{R}
+t <- 1
+maxAcc <- 0
+trials = 1
+
+while(t <= 30){
+  set.seed(1)
+  c50.model <- C5.0(train.x, as.factor(train.y), trials=t)
+  val.predictions <- c50.model %>% predict(val)
+  tbl <- table(val.labels, val.predictions)
+  acc <- val.labels == val.predictions
+  accuracy <- length(which(acc)) / length(val.predictions)
+  if(accuracy > maxAcc){
+    maxAcc <- accuracy
+    trials = t
+  }
+  t <- t + 1
+}
+```
+
+#### Best Model
+
+```{R}
+print(paste("Best Model Accuracy:", maxAcc))
+print(paste("Number of Trials:", trials))
+```
+
+
+```{R}
+c50.model <- c50.model <- C5.0(final.x, as.factor(final.y), trials=trials)
+summary(c50.model)
+```
+
+#### Test Model
+
+```{R}
+predictions <- c50.model %>% predict(test.data)
+```
+
+#### Print Results
+
+```{R}
+tbl <- table(test.labels, predictions)
+print(tbl)
+acc <- test.labels == predictions
+```
+
+```{R}
+accuracies["C5.0"] <- length(which(acc)) / length(predictions)
+print(paste("C5.0 Accuracy:", accuracies["C5.0"]))
+```
+
+#### Error, Precision, and Recall
+
+```{R}
+values <- predictions
+i <- 1
+while(i <= 9){
+  print(i - 1)
+  tp = tbl[i,i]
+  tn = length(test.labels) - length(which(values == i - 1)) - length(which(test.labels == i - 1)) + tp
+  fp = length(which(values == i - 1)) - tp
+  fn = length(which(test.labels == i - 1)) - tp
+  print(paste("TP:",tp))
+  print(paste("TN:",tn))
+  print(paste("FP:",fp))
+  print(paste("FN:",fn))
+  print(paste("Error:", (fp+fn)/sum(tbl)))
+  print(paste("Precision:", tp / (tp + fp)))
+  print(paste("Recall:", tp / (tp + fn)))
+  i <- i + 1
+}
+```
+
+# Results
+
+Among the five models, the test data accuracies are as follows:
+
+```{R}
+print(accuracies)
+```
+
+The Artificial Neural Network was the most accurate model for the given data at 72.85% accuracy, followed closely by the C5.0 Decision Tree at 71.31% and the Naive Bayes classifier at 70.03%. The Logistic and Elastic Net models both performed very poorly relative to the first two models, producing about half the accuracy. Assuming a uniform distribution of disorder subclass, the two models still performed roughly 3 times better than random guess, but based on the skew of the data, a majority classifier guessing Leigh Syndrome would achieve an accuracy of 25.91%, which is not much worse than the Logistic and Elastic Net models.

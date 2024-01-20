@@ -1,0 +1,18 @@
+
+> FLAGS= flags(
++     flag_numeric("learning_rate", 0.01)
++    ,flag_numeric("units1", 32)
++    ,flag_numeric("units2", 32)
++    ,flag_numeric("batch_ ..." ... [TRUNCATED] 
+
+> library(keras)
+
+> inputUnits = ncol(train.x)
+
+> model <- keras_model_sequential() %>%
++   layer_dense(units=FLAGS$units1, input_shape=inputUnits, activation=FLAGS$activation_function) %>%
++   laye .... [TRUNCATED] 
+
+> history <- model %>% compile( loss="sparse_categorical_crossentropy", optimizer=optimizer_adam(learning_rate=FLAGS$learning_rate), metric=c("accurac ..." ... [TRUNCATED] 
+
+> model %>% fit(as.matrix(train.x), as.matrix(train.y), epochs = FLAGS$epochs, batch_size=FLAGS$batch_size, validation_data=list(val, val.labels), ver .... [TRUNCATED] 
