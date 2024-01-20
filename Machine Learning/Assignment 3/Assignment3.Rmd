@@ -1,0 +1,714 @@
+---
+title: "Assignment3"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Problem 1: Predicting Income using Logistic Regression and Decision Trees
+
+## Data Exploration
+
+### Summary
+
+```{R}
+# Since each value is separated by both a comma and a space, we must first remove all spaces from the string
+data <- readLines('adult.data')
+data <- gsub(" ", "", data)
+data <- textConnection(data)
+# Now we can prepare the data as a csv, and the na.strings will simply be "?" without the space
+data <- read.csv(data, na.strings="?", header=FALSE)
+names <- c("age", "workclass", "fnlwgt", "education", "educationNum", "maritalStatus", "occupation", "relationship", "race", "sex", "capitalGain", "capitalLoss", "hoursPerWeek", "nativeCountry", "wage")
+colnames(data) <- names
+
+str(data)
+summary(data)
+```
+
+### Variable types
+
+-   `age`: continuous\
+-   `workclass`: nominal categorical\
+-   `fnlwgt`: continuous\
+-   `education`: ordinal discrete\
+-   `education-num`: ordinal discrete\
+-   `marital-status`: nominal categorical\
+-   `occupation`: nominal categorical\
+-   `relationship`: nominal categorical\
+-   `race`: nominal categorical\
+-   `sex`: nominal categorical\
+-   `capital-gain`: continuous\
+-   `capital-loss`: continuous\
+-   `hours-per-week`: continuous\
+-   `native-country`: nominal categorical\
+-   `wage`: ordinal categorical
+
+** Even though the dataset lists `education-num` as being continuous, it represents the numerical values associated with the ordinal variable `education`, thereby making it discrete.**
+
+```{R, echo=F}
+# Store these categories into a variable that can be referenced for later
+o <- 0
+n <- 1
+c <- 2
+cat <- c(c, n, c, o, o, n, n, n, n, n, c, c, c, n)
+```
+
+## Data Manipulation
+
+### Replace missing data
+
+```{R}
+# create function to determine mode
+getMode <- function(c) {
+  # only consider non-null values
+  uniqueC <- unique(c[!is.na(c)])
+  # return value that appears most
+  uniqueC[which.max(tabulate(match(c, uniqueC)))]
+}
+```
+
+#### Split Data for Training and Testing
+
+```{R}
+library(caret)
+set.seed(2)
+indices <- createDataPartition(data$wage, p=.8, list=FALSE)
+training_data <- data[indices,]
+testing_data <- data[-indices,]
+```
+
+#### Replace Missing Values with Mode of Training Data
+
+```{R}
+# Print the names of the columns that contain missing data
+names(which(colSums(is.na(data)) > 0))
+
+# replace NA categorical vals with the mode of the data
+
+# Get Modes
+workclass_mode <- getMode(training_data$workclass)
+occupation_mode <- getMode(training_data$occupation)
+country_mode <- getMode(training_data$nativeCountry)
+
+# Training Data
+training_data$workclass[which(is.na(training_data$workclass))] <- workclass_mode
+training_data$occupation[which(is.na(training_data$occupation))] <- occupation_mode
+training_data$nativeCountry[which(is.na(training_data$nativeCountry))] <- country_mode
+
+# Testing Data
+testing_data$workclass[which(is.na(testing_data$workclass))] <- workclass_mode
+testing_data$occupation[which(is.na(testing_data$occupation))] <- occupation_mode
+testing_data$nativeCountry[which(is.na(testing_data$nativeCountry))] <- country_mode
+```
+
+### Convert Ordinal Variables to Numeric
+
+```{R}
+# education-num already represents numeric ordinal for education
+
+# Convert wage from strings to numbers
+ordinal_wage <- data[,"wage"]
+ordinal_wage[which(ordinal_wage == "<=50K")] <- 0
+ordinal_wage[which(ordinal_wage == ">50K")] <- 1
+```
+
+### Run Statistical Tests on Variables
+
+```{R}
+# setup
+library(gmodels)
+library(vcd)
+
+# for each column in the bank dataset, determine the classification of the data by referring to the cat vector and run the appropriate test based on that value
+c <- 1
+wage <- data[,"wage"]
+while(c < length(cat)){
+  otherC <- data[,c]
+  otherN <- colnames(data[c])
+  
+  # skip education, as the data represents ordinal values but is not formatted numerically
+  if(otherN == "education"){
+    c <- c + 1
+    next
+  }
+  if(cat[c] == n){
+    # nominal value, use mosaic plot and chi-sq test
+    mosaicplot(table(otherC, wage), xlab = otherN, ylab = "Wage", main = paste("Wage by", otherN), shade=T)
+    CrossTable(otherC, wage, chisq=T)
+  }else if(cat[c] == o){
+    # ordinal value, use One-Way ANOVA Test
+    anova <- oneway.test(as.numeric(otherC)~wage)
+	  print(anova)
+  }else{
+    # continuous value, use Side-By-Side Boxplot
+    boxplot(otherC~wage, main = paste("Wage by", otherN), xlab = "Wage", ylab = otherN, outline=F)
+    print(t.test(otherC~wage, alternative="two.sided"))
+  }
+  c <- c + 1
+}
+```
+
+### Analysis
+
+Most of the columns hold statistical significance, with the exceptions being the final weight (`fnlwgt`), `capital-gain`, and `capital-loss`. Even though the medians of `hours-per-week` are very close in value, the rest of the data shows a positive skew for >50K and a negative skew on <=50K, indicating some correlation between `hours-per-week` and `wage`.
+
+Additionally, the One-Way ANOVA Test between `education-num` and `wage` may be difficult to see at first, but it is located between the Chi-Sq test for `fnlwgt` and the Mosaic plot for `marital-status`
+
+## Remove Unassociated Variables
+
+```{R}
+# Training Data
+training_data["fnlwgt"] <- NULL
+training_data["capitalGain"] <- NULL
+training_data["capitalLoss"] <- NULL
+training_data["education"] <- NULL
+
+# Testing Data
+testing_data["fnlwgt"] <- NULL
+testing_data["capitalGain"] <- NULL
+testing_data["capitalLoss"] <- NULL
+testing_data["education"] <- NULL
+```
+
+## Create and Test Logistic Regression Model
+
+### Prepare Data
+```{R}
+library(data.table)
+library(mltools)
+# Convert wage from strings to numbers and store the factors for later
+factor_wage <- as.factor(training_data[,"wage"])
+ordinal_wage <- training_data[,"wage"]
+ordinal_wage[which(ordinal_wage == "<=50K")] <- 0
+ordinal_wage[which(ordinal_wage == ">50K")] <- 1
+
+dt <- data.table(training_data)
+
+# convert nominal columns to factors
+dt$workclass <- as.factor(dt$workclass)
+dt$maritalStatus <- as.factor(dt$maritalStatus)
+dt$occupation <- as.factor(dt$occupation)
+dt$relationship <- as.factor(dt$relationship)
+dt$race <- as.factor(dt$race)
+dt$sex <- as.factor(dt$sex)
+dt$nativeCountry <- as.factor(dt$nativeCountry)
+
+# encode factors and convert back into data frame
+#dt <- one_hot(dt, cols = c("age", "workclass", "educationNum", "maritalStatus", "occupation", "relationship", "race", "sex", "hoursPerWeek", "nativeCountry"), dropUnusedLevels=T)
+training_data <- as.data.frame(dt)
+training_data$wage <- as.numeric(ordinal_wage)
+```
+
+### Train Model
+
+```{R}
+library(ISLR)
+logistic_model <- glm(wage~workclass + educationNum + maritalStatus + occupation + relationship + race + sex + hoursPerWeek + nativeCountry, family="binomial", data = training_data)
+
+summary(logistic_model)
+```
+
+### Predict Test Values
+
+#### Prepare Data
+
+```{R}
+dt <- data.table(testing_data)
+
+# convert nominal columns to factors
+dt$workclass <- as.factor(dt$workclass)
+dt$maritalStatus <- as.factor(dt$maritalStatus)
+dt$occupation <- as.factor(dt$occupation)
+dt$relationship <- as.factor(dt$relationship)
+dt$race <- as.factor(dt$race)
+dt$sex <- as.factor(dt$sex)
+dt$nativeCountry <- as.factor(dt$nativeCountry)
+testing_data <- as.data.frame(dt)
+```
+
+#### Run Predictions
+
+```{R}
+predictions <- predict(logistic_model, testing_data, type="response")
+head(predictions)
+
+predicted.label = factor(ifelse(predictions>0.5, ">50K", "<=50K"))
+actual.label = testing_data$wage
+
+t=table(predicted.label, actual.label)
+print(t)
+```
+
+### Calculate Error
+
+```{R}
+error = error=(t[1,2]+t[2,1])/sum(t)
+print(paste("Error:", error))
+```
+
+Using the Logistic Model, we get an error of 17.7%, which is much better than random guess.
+
+### Precision and Recall
+
+#### <=50K
+```{R}
+tp = t[1,1]
+tn = t[2,2]
+
+fp = t[1,2]
+fn = t[2,1]
+
+precision = tp / (tp + fp)
+recall = tp / (tp + fn)
+
+print(paste("Precision:", precision))
+print(paste("Recall:", recall))
+```
+
+#### >50K
+```{R}
+tp = t[2,2]
+tn = t[1,1]
+
+fp = t[2,1]
+fn = t[1,2]
+
+precision = tp / (tp + fp)
+recall = tp / (tp + fn)
+
+print(paste("Precision:", precision))
+print(paste("Recall:", recall))
+```
+
+The precision and recall of the >50K class is much worse than that of the <=50K class because the data is imbalanced, and there are 3 times more <=50K classes, resulting in a biased classifier.
+
+### Down-Sample Data to Remove Bias
+
+```{R}
+# Store the classes in their own data frames and sample the same number from each
+training.less <- training_data[which(training_data[,"wage"] == "0"),]
+training.more <- training_data[which(training_data[,"wage"] == "1"),]
+training.less <- training.less[sample(nrow(training.less), nrow(training.more)),]
+
+# Combine them back together
+ds.training <- rbind(training.less, training.more)
+```
+
+### Train new Logistic Model on Down-Sampled Data
+
+```{R}
+ds.logistic_model <- glm(wage~workclass + educationNum + maritalStatus + occupation + relationship + race + sex + hoursPerWeek + nativeCountry, family="binomial", data = ds.training)
+
+summary(ds.logistic_model)
+```
+
+#### Run Predictions
+
+```{R}
+ds.predictions <- predict(ds.logistic_model, testing_data, type="response")
+head(ds.predictions)
+
+ds.predicted.label = factor(ifelse(ds.predictions>0.5, ">50K", "<=50K"))
+
+ds.t=table(ds.predicted.label, actual.label)
+print(ds.t)
+```
+
+### Calculate Error
+
+```{R}
+ds.error = (ds.t[1,2]+ds.t[2,1])/sum(ds.t)
+print(paste("Error:", ds.error))
+```
+
+### Precision and Recall
+
+#### <=50K
+```{R}
+tp = ds.t[1,1]
+tn = ds.t[2,2]
+
+fp = ds.t[1,2]
+fn = ds.t[2,1]
+
+ds.precision = tp / (tp + fp)
+ds.recall = tp / (tp + fn)
+
+print(paste("Precision:", ds.precision))
+print(paste("Recall:", ds.recall))
+```
+
+#### >50K
+
+```{R}
+tp = ds.t[2,2]
+tn = ds.t[1,1]
+
+fp = ds.t[2,1]
+fn = ds.t[1,2]
+
+ds.precision = tp / (tp + fp)
+ds.recall = tp / (tp + fn)
+
+print(paste("Precision:", ds.precision))
+print(paste("Recall:", ds.recall))
+```
+
+### Analysis
+
+The down-sampled model had a slightly better Precision rate for the <=50K class and a much better Recall rate for the >50K class, but performed worse in every other area, having a higher error rate at 22.3% overall. The down-sampled model did a better job at classifying the <=50K range but did terribly at classifying >50K, only slightly outperforming random guess. This makes sense, as the model was less rigid towards guessing <=50K and a lot of inputs that should have been classified as such were classified as >50K instead. Even though the input data was balanced, the testing data still wasn't.
+
+## C5.0 Decision Tree Model
+
+### Train Model
+
+```{R}
+library(C50)
+
+c50.model <- C5.0(training_data[-length(training_data)], factor_wage, trials=30)
+```
+
+### Predict Test Data
+
+```{R}
+c50.predictions <- predict(c50.model, testing_data)
+```
+
+### Examine Predictions
+
+```{R}
+c50.t=table(c50.predictions, actual.label)
+print(c50.t)
+```
+
+### Calculate Error
+
+```{R}
+c50.error = (c50.t[1,2]+c50.t[2,1])/sum(c50.t)
+print(paste("Error:", c50.error))
+```
+
+### Precision and Recall
+
+#### <=50K
+```{R}
+tp = c50.t[1,1]
+tn = c50.t[2,2]
+
+fp = c50.t[1,2]
+fn = c50.t[2,1]
+
+c50.precision = tp / (tp + fp)
+c50.recall = tp / (tp + fn)
+
+print(paste("Precision:", c50.precision))
+print(paste("Recall:", c50.recall))
+```
+
+#### >50K
+
+```{R}
+tp = c50.t[2,2]
+tn = c50.t[1,1]
+
+fp = c50.t[2,1]
+fn = c50.t[1,2]
+
+c50.precision = tp / (tp + fp)
+c50.recall = tp / (tp + fn)
+
+print(paste("Precision:", c50.precision))
+print(paste("Recall:", c50.recall))
+```
+
+### Analysis
+
+The error, 16.7%, is about on par with the original logistic model, and its classification of the <=50K class is much better overall, with its precision and recall both being in the 85-95% range, but its >50K classification was lackluster, with its precision and recall both being in the 55-70% range.
+
+## C5.0 Decision Tree Model on Down-Sampled Data
+
+### Train Model
+
+```{R}
+ds.factor_wage_label = factor(ifelse(ds.training$wage>0.5, ">50K", "<=50K"))
+
+ds.c50.model <- C5.0(ds.training[-length(ds.training)], ds.factor_wage_label, trials=30)
+```
+
+### Predict Test Data
+
+```{R}
+ds.c50.predictions <- predict(ds.c50.model, testing_data)
+```
+
+### Examine Predictions
+
+```{R}
+ds.c50.t=table(ds.c50.predictions, actual.label)
+print(ds.c50.t)
+```
+
+### Calculate Error
+
+```{R}
+ds.c50.error = (ds.c50.t[1,2]+ds.c50.t[2,1])/sum(ds.c50.t)
+print(paste("Error:", ds.c50.error))
+```
+
+### Precision and Recall
+
+#### <=50K
+```{R}
+tp = ds.c50.t[1,1]
+tn = ds.c50.t[2,2]
+
+fp = ds.c50.t[1,2]
+fn = ds.c50.t[2,1]
+
+ds.c50.precision = tp / (tp + fp)
+ds.c50.recall = tp / (tp + fn)
+
+print(paste("Precision:", ds.c50.precision))
+print(paste("Recall:", ds.c50.recall))
+```
+
+#### >50K
+
+```{R}
+tp = ds.c50.t[2,2]
+tn = ds.c50.t[1,1]
+
+fp = ds.c50.t[2,1]
+fn = ds.c50.t[1,2]
+
+ds.c50.precision = tp / (tp + fp)
+ds.c50.recall = tp / (tp + fn)
+
+print(paste("Precision:", ds.c50.precision))
+print(paste("Recall:", ds.c50.recall))
+```
+
+### Analysis
+
+The C5.0 decision tree on the down-sampled data performs better than the original C5.0 decision tree, unlike the down-sampled logistic model. This time the error is only slightly higher at 20.7%, but its Precision and Recall values for both classes a a bit higher.
+
+## Conclusion
+
+Overall, the original logistic model performed the best, being much better at classifying the >50K class than the down-sampled C5.0 decision tree, and the other two models not too far behind.
+
+# Problem 2: Predicting Student Performance
+
+## Data Exploration
+
+```{R}
+students <- read.csv("student-mat.csv", sep=";", header=T, stringsAsFactors=T)
+cat <- c(n, n, c, n, c, n, o, o, n, n, n, n, o, o, o, n, n, n, n, n, n, n, n, o, o, o, o, o, o, c, c, c)
+```
+
+Similar to the previous problem, a lot of the variables in this dataset are numeric. but they represent an ordinal value, such as `Medu` (mother's education) and `Fedu` (father's education), `traveltime`, `studytime`, etc. Even these specific variables are numeric in what they represent, but the fact that they're floored and quantized transforms their continuous nature into an ordinal categorical one.
+
+### Data Summary
+
+```{R}
+summary(students)
+str(students)
+```
+
+### Missing Values
+
+Looking at the data summary, there doesn't seem to be any missing values for any column. Each nominal value has the correct number of factors explained by the student.txt file, and all the numeric values fall into the correct range.
+
+### Statistic Tests
+
+```{R}
+# setup
+library(gmodels)
+library(vcd)
+
+# create a data frame to store the values calculated from the Spearman rank correlations
+spearman_vals <- data.frame(0)
+
+# for each column in the bank dataset, determine the classification of the data by referring to the cat vector and run the appropriate test based on that value
+c <- 1
+G3 <- students[,"G3"]
+while(c <= length(cat)){
+  otherC <- students[,c]
+  otherN <- colnames(students[c])
+  
+  if(cat[c] == n || cat[c] == o){
+    # categorical value, use Side-By-Side Boxplot
+    boxplot(G3~otherC, main = paste("G3 by", otherN), ylab = "G3", xlab = otherN, outline=F)
+    if(nlevels(students[,c]) == 2){
+      print(paste("===== T-Test for", otherN, "====="))
+      print(t.test(G3~otherC, alternative="two.sided"))
+    }
+    anova <- oneway.test(G3~otherC)
+    print(paste("===== ANOVA Test for", otherN, "====="))
+    print(anova)
+  }else if(cat[c] == o){
+    a <- aov(G3~otherC)
+    print(paste("===== ANOVA Test for", otherN, "====="))
+    print(a)
+  }else{
+     spearman_vals[otherN] <- cor(y=G3, x=as.numeric(otherC), method="spearman", use="pairwise.complete.obs")
+  }
+  c <- c + 1
+}
+
+# remove placeholder value from vector
+spearman_vals[1] <- NULL
+
+print(spearman_vals)
+
+hist(G3, xlab = "G3", main = "Histogram of G3", breaks = 20)
+```
+### Analysis
+
+According to the statistic tests' p-values, the following variables have statistical significance (at $\alpha$ = 0.01) in describing G3 or have at least a moderate correlation according to the Spearman Rank tests:
+
+* Medu\
+* Mjob\
+* Failures\
+* higher\
+* G1\
+* G2
+
+Looking at the boxplots, other possible good indicators (despite the p-values) might be:
+
+* Fedu\
+* Fjob\
+* schoolsup\
+* internet\
+* freetime
+
+I tried to perform One-Way ANOVA tests on the ordinal data, but I got errors from R saying there were not enough observations, which seems to mean that one or more factors in each of the independent variables had insufficient entries in the data, which does make sense when you consider the side of this dataset is relatively small compared to those we've worked with prior.
+
+The histogram shows a relatively normal distribution, though slightly positively skewed and with a large set of outliers at G3 = 0. These could theoretically represent missing data, such as students who did not take the test at all, but the value 0 is within the range of the scores for the G3 variable, so I am inclined to leave it as to not affect results or incorrectly manipulate data.
+
+## Data Manipulation
+
+### Remove Unassociated Variables
+
+```{R}
+students["school"] <- NULL
+students["sex"] <- NULL
+students["address"] <- NULL
+students["Pstatus"] <- NULL
+students["reason"] <- NULL
+students["guardian"] <- NULL
+students["traveltime"] <- NULL
+students["studytime"] <- NULL
+students["famsup"] <- NULL
+students["paid"] <- NULL
+students["activities"] <- NULL
+students["nursery"] <- NULL
+students["romantic"] <- NULL
+students["famrel"] <- NULL
+students["goout"] <- NULL
+students["Dalc"] <- NULL
+students["Walc"] <- NULL
+students["health"] <- NULL
+students["age"] <- NULL
+students["famsize"] <- NULL
+students["absences"] <- NULL
+```
+
+### Convert Factors to numeric
+
+```{R}
+students[,"Mjob"] <- as.numeric(students[,"Mjob"])
+students[,"Fjob"] <- as.numeric(students[,"Fjob"])
+students[,"schoolsup"] <- as.numeric(students[,"schoolsup"])
+students[,"higher"] <- as.numeric(students[,"higher"])
+students[,"internet"] <- as.numeric(students[,"internet"])
+```
+
+### Split Data
+
+```{R}
+library(caret)
+
+set.seed(123)
+
+indices <- createDataPartition(G3, times=1, p=.8, list=FALSE)
+training_data <- students[indices,]
+testing_data <- students[-indices,]
+
+training_set <- training_data[,1:ncol(training_data) - 1]
+test_set <- testing_data[,1:ncol(testing_data) - 1]
+```
+
+## Train a Model using 10 Fold CV using Linear Regression
+
+```{R}
+set.seed(123)
+control <- trainControl(method = "cv", number = 10)
+model <- train(G3 ~ ., data = training_data, method = "lm", trControl = control)
+```
+
+### Model Info
+```{R}
+print(model)
+summary(model)
+```
+
+The coefficients with the highest statistical significance were G1 and G2, which makes the sense because G3 could be calculated partly using G1 and G2, but at the very least G1 and G2 are measures of the students performance in the math class, which G3 is also measuring. The next most significant coefficient was from schoolsup, which also makes sense because a student that is seeking out extra help from the school clearly cares about the grade they receive and will want to try to increase it as much as possible; furthermore, that supplemental help could allow the student to understand concepts better and, therefore, perform better on homework and tests.
+
+Coefficients that are statistically different from zero imply that there is a statistical correlation between that variable and the resulting variable (G3).
+
+### Test the Model
+
+```{R}
+prediction <- predict(model, test_set)
+print(paste("RMSE:", rmse(testing_data$G3, prediction)))
+```
+
+## Train a Model using 10 Fold CV using Step-Wise Linear Regression
+
+```{R}
+library(LEAP)
+set.seed(123)
+stepwise.model <- train(G3 ~ ., data = training_data, method = "leapBackward", trControl = control, tuneGrid=data.frame(nvmax=2:ncol(training_set)))
+```
+
+### Model info
+
+```{R}
+print(stepwise.model)
+summary(stepwise.model)
+```
+
+The best model (using the variables I selected) only used two variables, those being G1 and G2: based on the results of the other model, no other variable came close to having the same statistical significance.
+
+### Test the Model
+
+```{R}
+stepwise.prediction <- predict(stepwise.model, test_set)
+print(paste("RMSE:", rmse(testing_data$G3, stepwise.prediction)))
+```
+
+## Train a Model using a Regression Tree
+
+```{R}
+library(rpart)
+
+tree.model <- rpart(G3 ~ ., data = training_data, method = "class")
+```
+
+### Model Info
+
+```{R}
+print(tree.model)
+summary(tree.model)
+```
+
+### Test the Model
+
+```{R}
+tree.prediction <- predict(tree.model, test_set)
+print(paste("RMSE:", rmse(testing_data$G3, tree.prediction)))
+```
+
+## Conclusion
+
+The first two models predicted with roughly the same RMSE--the 10 Fold CV using Linear Regression performed the best with an RMSE of 1.689, followed by the 10 Fold CV using Step-Wise Linear Regression with an RMSE of 1.696, whereas the tree easily performed the worst with an RMSE of 11.136.

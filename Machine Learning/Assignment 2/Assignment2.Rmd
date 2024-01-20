@@ -1,0 +1,485 @@
+---
+title: "Assignment2"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Problem 1: Applying k-Nearest Neighbors
+
+## Data Exploration
+
+### Summary
+
+```{R}
+# Read in the data set, converting both "unknown" and -1 values to NA
+bank_full <- read.csv("bank-full.csv", sep=";", na.strings=c("unknown", -1))
+str(bank_full)
+summary(bank_full)
+```
+
+### Variable types
+
+-   `age`: continuous\
+-   `job`: nominal categorical\
+-   `marital`: nominal categorical\
+-   `education`: ordinal discrete\
+-   `default`: nominal categorical\
+-   `balance`: continuous\
+-   `housing`: nominal categorical\
+-   `loan`: nominal categorical\
+-   `contact`: nominal categorical\
+-   `day`: continuous\
+-   `month`: nominal categorical\
+-   `duration`: continuous\
+-   `campaign`: continuous\
+-   `pdays`: continuous\
+-   `previous`: continuous\
+-   `poutcome`: nominal categorical\
+-   `y`: nominal categorical
+
+```{R, echo=F}
+# Store these categories into a variable that can be referenced for later
+o <- 0
+n <- 1
+c <- 2
+cat <- c(c, n, n, o, n, c, n, n, n, c, n, c, c, c, c, n)
+
+y <- bank_full[,"y"]
+```
+
+### `y` Analysis
+
+```{R}
+table(bank_full$y)
+```
+
+There are many more "no"s than "yes"s in the data set, indicating that `y` is not balanced.
+
+### `y` Associations
+
+Categorical to categorical: CrossTable & Mosaic Plot Categorical to numerical: Side-By-Side Box Plot Categorical to Ordinal: One-Way ANOVA
+
+#### Mosaic Plots and ChiSquare Tests \| Side-By-Side Boxplots and Two Sample T-Test \| One-Way ANOVA
+
+We can perform Mosaic Plots and ChiSquare Tests on the nominal data, Side-By-Side Boxplots on the continuous data, and One-Way ANOVA tests on the ordinal data using the following code:
+
+```{R}
+# setup
+library(gmodels)
+library(vcd)
+
+# create ordinal vector for education values for One-Way ANOVA Test
+ordinal_education <- bank_full[,"education"]
+ordinal_education[which(ordinal_education == "primary")] <- 1
+ordinal_education[which(ordinal_education == "secondary")] <- 2
+ordinal_education[which(ordinal_education == "tertiary")] <- 3
+
+# create function to determine mode
+getMode <- function(c) {
+  # only consider non-null values
+  uniqueC <- unique(c[!is.na(c)])
+  # return value that appears most
+  uniqueC[which.max(tabulate(match(c, uniqueC)))]
+}
+
+# replace NA vals with the mode of the data so that we can run One-Way ANOVA Test
+ordinal_education[which(is.na(ordinal_education))] <- getMode(ordinal_education)
+
+# for each column in the bank dataset, determine the classification of the data by referring to the cat vector and run the appropriate test based on that value
+c <- 1
+while(c <= length(cat)){
+  otherC <- bank_full[,c]
+  otherN <- colnames(bank_full[c])
+  
+  # skip education, as the data represents ordinal values but is not formatted numerically
+  # skip y, as that is the data where are analyzing
+  if(otherN == "education"){
+    c <- c + 1
+    next
+  }
+  if(cat[c] == n){
+    # nominal value, use mosaic plot and chi-sq test
+    mosaicplot(table(otherC, y), xlab = otherN, ylab = "Subscribed", main = paste("Subscribed by", otherN), shade=T)
+    CrossTable(otherC, y, chisq=T)
+  }else{
+    # continuous value, use Side-By-Side Boxplot
+    boxplot(otherC~y, main = paste("Subscribed by", otherN), xlab = "Subscribed", ylab = otherN, outline=F)
+    print(t.test(otherC~y, alternative="two.sided"))
+  }
+  c <- c + 1
+}
+
+# manually run One-Way ANOVA test for numerical education values
+education_anova <- oneway.test(as.numeric(ordinal_education)~y)
+
+print(education_anova)
+```
+
+Based on the data analysis above, it seems that the factors `age`, `contact`, `day`, and `campaign` played little part in influencing the subscription to the product. Although the p-values from these tests indicate a very strong correlation, the graphs themselves told a different story. Ultimately, in my opinion, the very slight differences in subscription rates based on these factors do not merit further exploration through ML.
+
+```{R, echo=F}
+bank_reduced <- bank_full
+bank_reduced["age"] <- NULL
+bank_reduced["contact"] <- NULL
+bank_reduced["day"] <- NULL
+bank_reduced["campaign"] <- NULL
+```
+
+## Data Preparation:
+
+```{R}
+colSums(is.na(bank_reduced))
+```
+
+The columns `job`, `education`, `balance`, `pdays`, and `poutcome` all have `NA` values.
+
+```{R}
+# replace NA vals with the mode of the data
+bank_reduced[,"job"][which(is.na(bank_reduced[,"job"]))] <- getMode(bank_reduced[,"job"])
+bank_reduced[,"education"][which(is.na(bank_reduced[,"education"]))] <- getMode(bank_reduced[,"education"])
+bank_reduced[,"poutcome"][which(is.na(bank_reduced[,"poutcome"]))] <- getMode(bank_reduced[,"poutcome"])
+
+
+# replace NA vals with the mean of the data
+bank_reduced[,"balance"][which(is.na(bank_reduced[,"balance"]))] <- mean(bank_reduced[,"balance"], na.rm=T)
+bank_reduced[,"pdays"][which(is.na(bank_reduced[,"pdays"]))] <- mean(bank_reduced[,"pdays"], na.rm=T)
+
+colSums(is.na(bank_reduced))
+```
+
+## Training and Evaluation of ML Models
+
+### Randomization and One-Hot-Encoding
+
+```{R}
+library(data.table)
+library(mltools)
+set.seed(1)
+
+# shuffle the rows
+bank_randomized <- bank_reduced[sample(1:nrow(bank_reduced)),]
+#reduced_cat <- c(n, n, o, n, c, n, n, n, c, c, c, n)
+
+# convert ordinal values to numbers
+bank_randomized[,"education"][which(bank_randomized[,"education"] == "primary")] <- 1
+bank_randomized[,"education"][which(bank_randomized[,"education"] == "secondary")] <- 2
+bank_randomized[,"education"][which(bank_randomized[,"education"] == "tertiary")] <- 3
+
+dt <- data.table(bank_randomized)
+
+# convert nominal columns to factors
+dt$job <- as.factor(dt$job)
+dt$default <- as.factor(dt$default)
+dt$housing <- as.factor(dt$housing)
+dt$loan <- as.factor(dt$loan)
+dt$month <- as.factor(dt$month)
+dt$poutcome <- as.factor(dt$poutcome)
+
+# encode factors and convert back into data frame
+dt <- one_hot(dt, cols = c("job", "marital", "default", "housing", "loan", "month", "poutcome"), dropUnusedLevels=T)
+bank_enc <- as.data.frame(dt)
+```
+### Z-Score Normalization
+
+```{R}
+# Z-Score Normalization
+normalize <- function(x){
+  mean <- mean(x)
+  sd <- sd(x)
+  
+  i <- 1
+  while(i <= length(x)){
+    x[i] <- (x[i] - mean)/ sd
+    i <- i + 1
+  }
+  return(x)
+}
+
+bank_norm <- bank_enc
+
+bank_norm$balance <- normalize(bank_norm$balance)
+bank_norm$education <- normalize(as.numeric(bank_norm$education))
+bank_norm$duration <- normalize(bank_norm$duration)
+bank_norm$pdays <- normalize(bank_norm$pdays)
+bank_norm$previous <- normalize(bank_norm$previous)
+
+# split data into training and test sets
+training_set <- bank_norm[1:36168,]
+test_set <- bank_norm[36169:length(bank_norm),]
+```
+
+### Cross Validation
+
+```{R}
+library(caret)
+library(class)
+
+# define functions from lectures
+knn_fold=function(features,target,fold,k){
+  train=features[-fold,]
+  validation=features[fold,]
+  train_labels=target[-fold]
+  validation_labels=target[fold]
+  validation_preds=knn(train,validation,train_labels,k=k)
+  t= table(validation_labels,validation_preds)
+  error=(t[1,2]+t[2,1])/(t[1,1]+t[1,2]+t[2,1]+t[2,2])
+  accuracy = 1-error
+  return(accuracy)
+}
+
+crossValidationError=function(features,target,k){
+  folds=createFolds(target,k=10)
+  accuracies=sapply(folds,knn_fold,features=features,
+  target=target,k=k)
+  return(mean(accuracies))
+}
+
+# split up the inputs and outputs
+training_set_n <- training_set[,1:length(training_set)-1]
+training_target <- training_set$y
+
+# store results from different k values to determine the best value for k
+k <- c(1, 5, 10, 20, 50, 100, 190)
+accuracy <- c(0, 0, 0, 0, 0, 0, 0)
+results <- data.frame(k, accuracy)
+i <- 1
+while(i <= nrow(results)){
+  results[i,2] <- crossValidationError(training_set_n, training_target, results[i,1])
+  i <- i + 1
+}
+```
+
+```{R}
+# Plot the results from running the Cross Validations
+plot(results[,2]~results[,1], main="Cross Validation Accuracy Vs K", xlab="k", ylab="CVAccuracy")
+lines(results[,2]~results[,1])
+```
+
+Based on these results, we can see that the value `k` = 20 yields the highest accuracy for the cross validation.
+
+### KNN Training
+
+```{R}
+# train the knn model on the training set and test it on the test set
+test_set_n <- test_set[1:length(test_set)-1]
+knn_model <- knn(training_set_n, test_set_n, training_target, 20)
+```
+
+We can then test the accuracy of the knn model by checking if it is equal to the `y` values in the test set.
+
+### KNN Evaluation
+
+```{R, echo=F}
+knn_results <- knn_model == test_set$y
+knn_accuracy <- length(knn_results[which(knn_results == T)]) / length(knn_results)
+print(paste("knn model accuracy: ", knn_accuracy * 100, "%", sep = ""))
+
+CrossTable(x = test_set$y, y = knn_model)
+
+TP <- 0
+FP <- 0
+TN <- 0
+FN <- 0
+i <- 1
+while(i <= length(knn_model)){
+  if(knn_model[i] == 'yes'){
+    if(test_set$y[i] == 'yes'){
+      TP <- TP + 1
+    }else{
+      FP <- FP + 1
+    }
+  }else{
+    if(test_set$y[i] == 'yes'){
+      FN <- FN + 1
+    }else{
+      TN <- TN + 1
+    }
+  }
+  i <- i + 1
+}
+```
+
+Based on the CrossTable, we can see that...\
+-   The True Positive rate is `r TP` / `r length(test_set$y[which(test_set$y == 'yes')])` =  `r TP/length(test_set$y[which(test_set$y == 'yes')])`\
+-   The False Positive rate is `r FP` / `r length(test_set$y[which(test_set$y == 'no')])` =  `r FP/length(test_set$y[which(test_set$y == 'no')])`\
+-   The True Negative rate is `r TN` / `r length(test_set$y[which(test_set$y == 'no')])` =  `r TN/length(test_set$y[which(test_set$y == 'no')])`\
+-   The False Negative Rate is `r FN` / `r length(test_set$y[which(test_set$y == 'yes')])` =  `r FN/length(test_set$y[which(test_set$y == 'yes')])`
+
+The knn model does remarkably well predicting `no` values, but is rather lackluster when predicting `yes` values, only successfully predicting them correctly roughly 35% of the time.
+
+### Majority Classifier
+
+A majority classifier that only predicts `no` would correctly classify the outputs `r 31889 / 36132 * 100`% of the time, which is only 2% worse than the knn model.
+
+For the majority classifier, the False Positive Rate would be 0, since it would never predict `yes` when the true value is `no`, and the False Negative Rate would be 1, since it would always predict `no` when the true value is `yes`.
+
+This means the majority classifier performs marginally better in terms of False Positives, but markedly worse in terms of False Negatives.
+
+# Problem 2: Applying Naïve Bayes Classifier to Sentiment Classification of COVID Tweets
+
+## Data Summary
+
+```{R}
+library(data.table)
+corona_full <- fread("Corona_NLP_train.csv", encoding="Latin-1")
+
+str(corona_full)
+summary(corona_full)
+```
+
+## Data Setup
+
+```{R}
+set.seed(1)
+corona_randomized <- corona_full[sample(1:nrow(corona_full)),]
+corona_snorm <- corona_randomized
+i <- 1
+while(i <= nrow(corona_randomized)){
+  if(corona_snorm[i, "Sentiment"] == "Extremely Positive"){
+    corona_snorm[i, "Sentiment"] <- "Positive"
+  }else if(corona_snorm[i, "Sentiment"] == "Extremely Negative"){
+    corona_snorm[i, "Sentiment"] <- "Negative"
+  }
+    
+  i <- i + 1
+}
+corona_snorm$Sentiment <- factor(corona_snorm$Sentiment)
+```
+
+```{R}
+table(corona_snorm$Sentiment)
+```
+
+## Cleaning and Standardization
+
+```{R}
+library(tm)
+library(SnowballC)
+
+ptweet_corpus <- VCorpus(VectorSource(corona_snorm$OriginalTweet[which(corona_snorm$Sentiment == "Positive")]))
+ptweet_corpus_clean <- tm_map(ptweet_corpus, content_transformer(tolower))
+ptweet_corpus_clean <- tm_map(ptweet_corpus_clean, removeWords, stopwords())
+replacePunctuation <- function(x){
+  gsub("[[:punct:]]+", " ", x)
+}
+ptweet_corpus_clean <- tm_map(ptweet_corpus_clean, content_transformer(replacePunctuation))
+ptweet_corpus_clean <- tm_map(ptweet_corpus_clean, stemDocument)
+ptweet_corpus_clean <- tm_map(ptweet_corpus_clean, stripWhitespace)
+ptweet_corpus_clean <- tm_map(ptweet_corpus_clean, removeWords, c("https", "covid", "coronavirus"))
+
+
+ntweet_corpus <- VCorpus(VectorSource(corona_snorm$OriginalTweet[which(corona_snorm$Sentiment == "Negative")]))
+ntweet_corpus_clean <- tm_map(ntweet_corpus, content_transformer(tolower))
+ntweet_corpus_clean <- tm_map(ntweet_corpus_clean, removeWords, stopwords())
+ntweet_corpus_clean <- tm_map(ntweet_corpus_clean, content_transformer(replacePunctuation))
+ntweet_corpus_clean <- tm_map(ntweet_corpus_clean, stemDocument)
+ntweet_corpus_clean <- tm_map(ntweet_corpus_clean, stripWhitespace)
+ntweet_corpus_clean <- tm_map(ntweet_corpus_clean, removeWords, c("https", "covid", "coronavirus"))
+
+tweet_corpus <- VCorpus(VectorSource(corona_snorm$OriginalTweet))
+tweet_corpus_clean <- tm_map(tweet_corpus, content_transformer(tolower))
+tweet_corpus_clean <- tm_map(tweet_corpus_clean, removeWords, stopwords())
+tweet_corpus_clean <- tm_map(tweet_corpus_clean, content_transformer(replacePunctuation))
+tweet_corpus_clean <- tm_map(tweet_corpus_clean, stemDocument)
+tweet_corpus_clean <- tm_map(tweet_corpus_clean, stripWhitespace)
+tweet_corpus_clean <- tm_map(tweet_corpus_clean, removeWords, c("https", "covid", "coronavirus"))
+```
+
+## Wordclouds
+```{R}
+library(wordcloud)
+wordcloud(ptweet_corpus_clean, random.order = F, max.words = 100, scale = c(2, .3))
+wordcloud(ntweet_corpus_clean, random.order = F, max.words = 100, scale = c(2, .3))
+```
+
+After removing "https", "covid", and "coronavirus" from each of the corpi, there are not a lot of noticeable differences between the two wordclouds, but the one major difference between the two is that the negative wordcloud's largest words are price and food, whereas the positive wordcloud's largest words are store and supermarket. Clearly, much of the frustrations of the negative tweets stem from food availability and skyrocketing prices due to high demand and low supply.
+
+## Document Term Matrices
+
+```{R}
+dtm <- DocumentTermMatrix(tweet_corpus_clean)
+training_dtm <- dtm[1:32925,]
+testing_dtm <- dtm[32926:nrow(dtm),]
+
+training_dtm_labels <- corona_snorm[1:32925,]$Sentiment
+testing_dtm_labels <- corona_snorm[32926:nrow(corona_snorm),]$Sentiment
+```
+
+## Create Training and Test Sets
+
+### Calculate Frequency
+
+```{R}
+tweet_freq <- findFreqTerms(training_dtm, 50)
+tweet_trainf <- training_dtm[ , tweet_freq]
+tweet_testf <- testing_dtm[ , tweet_freq]
+```
+
+### Convert Frequencies to Binary Features
+
+```{R}
+convert_counts <- function(x){
+  x <- ifelse(x >0, "Yes", "No")
+}
+
+train <- apply(tweet_trainf, MARGIN = 2, convert_counts)
+test <- apply(tweet_testf, MARGIN = 2, convert_counts)
+```
+
+## Create and Test Classifier
+
+```{R}
+library(e1071)
+classifier <- naiveBayes(train, training_dtm_labels)
+pred <- predict(classifier, test)
+```
+
+## Results
+
+### Accuracy
+
+```{R, echo=F}
+tbl <- table(testing_dtm_labels, pred)
+print(tbl)
+acc <- testing_dtm_labels == pred
+```
+The overall accuracy of the model is `r length(acc[which(acc == T)])` / `r length(acc)` = `r 100*length(acc[which(acc == T)]) / length(acc)`%
+
+### Precision and Recall
+
+#### Positive Class
+```{R, echo=F}
+pos_tp <- tbl["Positive", "Positive"]
+pos_fp <- sum(tbl[,"Positive"]) - tbl["Positive", "Positive"]
+pos_fn <- sum(tbl["Positive",]) - tbl["Positive", "Positive"]
+pos_prec <- pos_tp / (pos_tp + pos_fp)
+pos_rec <- pos_tp / (pos_tp + pos_fn)
+```
+
+Positive Precision: `r pos_prec`\
+Positive Recall: `r pos_rec`\
+
+#### Neutral Class
+```{R, echo=F}
+neu_tp <- tbl["Neutral", "Neutral"]
+neu_fp <- sum(tbl[,"Neutral"]) - tbl["Neutral", "Neutral"]
+neu_fn <- sum(tbl["Neutral",]) - tbl["Neutral", "Neutral"]
+neu_prec <- neu_tp / (neu_tp + neu_fp)
+neu_rec <- neu_tp / (neu_tp + neu_fn)
+```
+
+Neutral Precision: `r neu_prec`\
+Neutral Recall: `r neu_rec`\
+
+#### Negative Class
+```{R, echo=F}
+neg_tp <- tbl["Negative", "Negative"]
+neg_fp <- sum(tbl[,"Negative"]) - tbl["Negative", "Negative"]
+neg_fn <- sum(tbl["Negative",]) - tbl["Negative", "Negative"]
+neg_prec <- neg_tp / (neg_tp + neg_fp)
+neg_rec <- neg_tp / (neg_tp + neg_fn)
+```
+
+Negative Precision: `r neg_prec`\
+Negative Recall: `r neg_rec`

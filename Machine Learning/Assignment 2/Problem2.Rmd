@@ -1,0 +1,171 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Problem 2: Applying Naïve Bayes Classifier to Sentiment Classification of COVID Tweets
+
+## Data Summary
+
+```{R}
+library(data.table)
+corona_full <- fread("Corona_NLP_train.csv", encoding="Latin-1")
+
+str(corona_full)
+summary(corona_full)
+```
+
+## Data Setup
+
+```{R}
+corona_randomized <- corona_full[sample(1:nrow(corona_full)),]
+corona_snorm <- corona_randomized
+i <- 1
+while(i <= nrow(corona_randomized)){
+  if(corona_snorm[i, "Sentiment"] == "Extremely Positive"){
+    corona_snorm[i, "Sentiment"] <- "Positive"
+  }else if(corona_snorm[i, "Sentiment"] == "Extremely Negative"){
+    corona_snorm[i, "Sentiment"] <- "Negative"
+  }
+    
+  i <- i + 1
+}
+corona_snorm$Sentiment <- factor(corona_snorm$Sentiment)
+```
+
+```{R}
+table(corona_snorm$Sentiment)
+```
+
+## Cleaning and Standardization
+
+```{R}
+library(tm)
+library(SnowballC)
+
+ptweet_corpus <- VCorpus(VectorSource(corona_snorm$OriginalTweet[which(corona_snorm$Sentiment == "Positive")]))
+ptweet_corpus_clean <- tm_map(ptweet_corpus, content_transformer(tolower))
+ptweet_corpus_clean <- tm_map(ptweet_corpus_clean, removeWords, stopwords())
+replacePunctuation <- function(x){
+  gsub("[[:punct:]]+", " ", x)
+}
+ptweet_corpus_clean <- tm_map(ptweet_corpus_clean, content_transformer(replacePunctuation))
+ptweet_corpus_clean <- tm_map(ptweet_corpus_clean, stemDocument)
+ptweet_corpus_clean <- tm_map(ptweet_corpus_clean, stripWhitespace)
+ptweet_corpus_clean <- tm_map(ptweet_corpus_clean, removeWords, c("https", "covid", "coronavirus"))
+
+
+ntweet_corpus <- VCorpus(VectorSource(corona_snorm$OriginalTweet[which(corona_snorm$Sentiment == "Negative")]))
+ntweet_corpus_clean <- tm_map(ntweet_corpus, content_transformer(tolower))
+ntweet_corpus_clean <- tm_map(ntweet_corpus_clean, removeWords, stopwords())
+ntweet_corpus_clean <- tm_map(ntweet_corpus_clean, content_transformer(replacePunctuation))
+ntweet_corpus_clean <- tm_map(ntweet_corpus_clean, stemDocument)
+ntweet_corpus_clean <- tm_map(ntweet_corpus_clean, stripWhitespace)
+ntweet_corpus_clean <- tm_map(ntweet_corpus_clean, removeWords, c("https", "covid", "coronavirus"))
+
+tweet_corpus <- VCorpus(VectorSource(corona_snorm$OriginalTweet))
+tweet_corpus_clean <- tm_map(tweet_corpus, content_transformer(tolower))
+tweet_corpus_clean <- tm_map(tweet_corpus_clean, removeWords, stopwords())
+tweet_corpus_clean <- tm_map(tweet_corpus_clean, content_transformer(replacePunctuation))
+tweet_corpus_clean <- tm_map(tweet_corpus_clean, stemDocument)
+tweet_corpus_clean <- tm_map(tweet_corpus_clean, stripWhitespace)
+tweet_corpus_clean <- tm_map(tweet_corpus_clean, removeWords, c("https", "covid", "coronavirus"))
+```
+
+## Wordclouds
+```{R}
+library(wordcloud)
+wordcloud(ptweet_corpus_clean, random.order = F, max.words = 100, scale = c(2, .3))
+wordcloud(ntweet_corpus_clean, random.order = F, max.words = 100, scale = c(2, .3))
+```
+
+After removing "https", "covid", and "coronavirus" from each of the corpi, there are not a lot of noticeable differences between the two wordclouds, but the one major difference between the two is that the negative wordcloud's largest words are price and food, whereas the positive wordcloud's largest words are store and supermarket. Clearly, much of the frustrations of the negative tweets stem from food availability and skyrocketing prices due to high demand and low supply.
+
+## Document Term Matrices
+
+```{R}
+dtm <- DocumentTermMatrix(tweet_corpus_clean)
+training_dtm <- dtm[1:32925,]
+testing_dtm <- dtm[32926:nrow(dtm),]
+
+training_dtm_labels <- corona_snorm[1:32925,]$Sentiment
+testing_dtm_labels <- corona_snorm[32926:nrow(corona_snorm),]$Sentiment
+```
+
+## Create Training and Test Sets
+
+### Calculate Frequency
+
+```{R}
+tweet_freq <- findFreqTerms(training_dtm, 50)
+tweet_trainf <- training_dtm[ , tweet_freq]
+tweet_testf <- testing_dtm[ , tweet_freq]
+```
+
+### Convert Frequencies to Binary Features
+
+```{R}
+convert_counts <- function(x){
+  x <- ifelse(x >0, "Yes", "No")
+}
+
+train <- apply(tweet_trainf, MARGIN = 2, convert_counts)
+test <- apply(tweet_testf, MARGIN = 2, convert_counts)
+```
+
+## Create and Test Classifier
+
+```{R}
+library(e1071)
+classifier <- naiveBayes(train, training_dtm_labels)
+pred <- predict(classifier, test)
+```
+
+## Results
+
+### Accuracy
+
+```{R, echo=F}
+tbl <- table(testing_dtm_labels, pred)
+print(tbl)
+acc <- testing_dtm_labels == pred
+```
+The overall accuracy of the model is `r length(acc[which(acc == T)])` / `r length(acc)` = `r 100*length(acc[which(acc == T)]) / length(acc)`%
+
+### Precision and Recall
+
+#### Positive Class
+```{R, echo=F}
+pos_tp <- tbl["Positive", "Positive"]
+pos_fp <- sum(tbl[,"Positive"]) - tbl["Positive", "Positive"]
+pos_fn <- sum(tbl["Positive",]) - tbl["Positive", "Positive"]
+pos_prec <- pos_tp / (pos_tp + pos_fp)
+pos_rec <- pos_tp / (pos_tp + pos_fn)
+```
+
+Positive Precision: `r pos_prec`\
+Positive Recall: `r pos_rec`\
+
+#### Neutral Class
+```{R, echo=F}
+neu_tp <- tbl["Neutral", "Neutral"]
+neu_fp <- sum(tbl[,"Neutral"]) - tbl["Neutral", "Neutral"]
+neu_fn <- sum(tbl["Neutral",]) - tbl["Neutral", "Neutral"]
+neu_prec <- neu_tp / (neu_tp + neu_fp)
+neu_rec <- neu_tp / (neu_tp + neu_fn)
+```
+
+Neutral Precision: `r neu_prec`\
+Neutral Recall: `r neu_rec`\
+
+#### Negative Class
+```{R, echo=F}
+neg_tp <- tbl["Negative", "Negative"]
+neg_fp <- sum(tbl[,"Negative"]) - tbl["Negative", "Negative"]
+neg_fn <- sum(tbl["Negative",]) - tbl["Negative", "Negative"]
+neg_prec <- neg_tp / (neg_tp + neg_fp)
+neg_rec <- neg_tp / (neg_tp + neg_fn)
+```
+
+Negative Precision: `r neg_prec`\
+Negative Recall: `r neg_rec`
