@@ -1,0 +1,1 @@
+I took a semester of Java in high school, so I was told to go into Java II for my first semester, and this was the very first assignment I turned in after not having used Java for over a year and a half
